@@ -134,10 +134,17 @@ def against_gold(gold_path, tokenizers):
     return res
 
 
+from morfessor_segmenter import MorfessorModel
 from porter_segmenter_nltk import PorterSegmenter
 
-seg = PorterSegmenter()
+porter_seg = PorterSegmenter()
 
-tokenizers = {"porter": seg.segment}
+mo = MorfessorModel()
+mo.load("../data/morf_wiki_103.bin")
+
+tokenizers = {
+    "porter": porter_seg.segment,
+    "morfessor": mo.segment,
+}
 
 print(against_gold(GOLD_PATH, tokenizers))
