@@ -105,6 +105,12 @@ def against_gold(gold_path, tokenizers):
     all_decisions = defaultdict(list)
 
     gold: Dict[str, list] = get_gold(gold_path)
+
+    n_words = len(gold)
+    n_tok_gold = sum([len(tok) for tok in gold.values()])
+    avg_tpw_gold = n_tok_gold / n_words
+
+    all_tok_nums = defaultdict(list[int])
     for word in gold.keys():
         vec = seg_to_vec(gold[word], len(word))
         all_decisions["gold"].extend(vec)
@@ -114,11 +120,16 @@ def against_gold(gold_path, tokenizers):
             vec = seg_to_vec(pieces, len(word))
             all_decisions[name].extend(vec)
 
+            n_tok = len(pieces)
+            all_tok_nums[name].append(n_tok)
+
     names = list(tokenizers.keys())
     res = {}
     vec_g = all_decisions["gold"]
     g_abs = sum(vec_g)
     for i, n in enumerate(names):
+        avg_tpw = sum(all_tok_nums[n]) / n_words
+
         vec_n = all_decisions[n]
 
         kappa = cohen_kappa_score(vec_n, vec_g)
@@ -129,7 +140,14 @@ def against_gold(gold_path, tokenizers):
         recall = intersec / g_abs if g_abs > 0 else 0.0
         f1 = 2 * intersec / (n_abs + g_abs) if (n_abs + g_abs) > 0 else 0.0
 
-        res[n] = {"kappa": kappa, "precision": precision, "recall": recall, "f1": f1}
+        res[n] = {
+            "kappa": kappa,
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
+            "avg_tpw": avg_tpw,
+            "avg_tpw_gold": avg_tpw_gold,
+        }
 
     return res
 
