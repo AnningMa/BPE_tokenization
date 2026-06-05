@@ -6,7 +6,8 @@ import numpy as np
 from datasets import load_dataset
 from sklearn.metrics import cohen_kappa_score
 
-GOLD_PATH = "../gold/goldstd_combined.segmentation.eng"
+GOLD_PATH = "../data/goldstd_combined.segmentation.eng"
+FREQ_WORDS_PATH = "../data/google-10000-english.txt"
 
 
 def seg_to_vec(pieces: list[str], word_len: int) -> list[int]:
@@ -101,55 +102,59 @@ def get_gold(input_path) -> Dict[str, list]:
     return res
 
 
-def against_gold(gold_path, tokenizers):
-    all_decisions = defaultdict(list)
+def against_gold(gold_path, tokenize):
 
-    gold: Dict[str, list] = get_gold(gold_path)
-
+    gold = get_gold(gold_path)
     n_words = len(gold)
-    n_tok_gold = sum([len(tok) for tok in gold.values()])
-    avg_tpw_gold = n_tok_gold / n_words
+    n_sw_gold = sum([len(sw) for sw in gold.values()])
+    avg_spw_gold = n_sw_gold / n_words
 
-    all_tok_nums = defaultdict(list[int])
+    vec_gold = []
+    vec_pred = []
+    n_sw_pred = []
     for word in gold.keys():
-        vec = seg_to_vec(gold[word], len(word))
-        all_decisions["gold"].extend(vec)
+        vec_gold.extend(seg_to_vec(gold[word], len(word)))
 
-        for name, tokenize in tokenizers.items():
-            pieces = tokenize(word)
-            vec = seg_to_vec(pieces, len(word))
-            all_decisions[name].extend(vec)
+        pieces = tokenize(word)
+        vec_pred.extend(seg_to_vec(pieces, len(word)))
+        n_sw_pred.append(len(pieces))
+    avg_spw_pred = sum(n_sw_pred) / n_words
 
-            n_tok = len(pieces)
-            all_tok_nums[name].append(n_tok)
+    kappa = cohen_kappa_score(vec_pred, vec_gold)
 
-    names = list(tokenizers.keys())
-    res = {}
-    vec_g = all_decisions["gold"]
-    g_abs = sum(vec_g)
-    for i, n in enumerate(names):
-        avg_tpw = sum(all_tok_nums[n]) / n_words
+    abs_pred = sum(vec_pred)
+    abs_gold = sum(vec_gold)
+    intersec = sum(a == 1 and b == 1 for a, b in zip(vec_pred, vec_gold))
+    p = intersec / abs_pred if abs_pred > 0 else 0.0
+    r = intersec / abs_gold if abs_gold > 0 else 0.0
+    f1 = 2 * intersec / (abs_pred + abs_gold) if (abs_pred + abs_gold) > 0 else 0.0
 
-        vec_n = all_decisions[n]
+    return {
+        "kappa": kappa,
+        "precision": p,
+        "recall": r,
+        "f1": f1,
+        "avg_spw_pred": avg_spw_pred,
+        "avg_spe_gold": avg_spw_gold,
+    }
 
-        kappa = cohen_kappa_score(vec_n, vec_g)
 
-        n_abs = sum(vec_n)
-        intersec = sum(a == 1 and b == 1 for a, b in zip(vec_n, vec_g))
-        precision = intersec / n_abs if n_abs > 0 else 0.0
-        recall = intersec / g_abs if g_abs > 0 else 0.0
-        f1 = 2 * intersec / (n_abs + g_abs) if (n_abs + g_abs) > 0 else 0.0
+def freq_words_preserved(path, tokenize):
+    freq_vocab = []
+    with open(path) as f:
+        for line in f:
+            freq_vocab.append(line.strip())
 
-        res[n] = {
-            "kappa": kappa,
-            "precision": precision,
-            "recall": recall,
-            "f1": f1,
-            "avg_tpw": avg_tpw,
-            "avg_tpw_gold": avg_tpw_gold,
-        }
+    preserved = set()
+    for w in freq_vocab:
+        pieces = tokenize(w)
+        if len(pieces) == 1 and pieces[0] == w:
+            preserved.add(w)
 
-    return res
+    n_pres = len(preserved)
+    prop = len(preserved) / len(freq_vocab)
+
+    return {"n_preserved": n_pres, "proportion": prop}
 
 
 from morfessor_segmenter import MorfessorModel
@@ -165,4 +170,5 @@ tokenizers = {
     "morfessor": mo.segment,
 }
 
-print(against_gold(GOLD_PATH, tokenizers))
+print(against_gold(GOLD_PATH, tokenizers["morfessor"]))
+print(freq_words_preserved(FREQ_WORDS_PATH, tokenizers["morfessor"]))
