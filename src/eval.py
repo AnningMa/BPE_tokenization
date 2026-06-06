@@ -59,6 +59,7 @@ def pairwise_agreement(corpus_words, tokenizers):
 def make_vocab(
     base_name="Salesforce/wikitext",
     dataset_id="wikitext-103-v1",
+    write_output=False,
     output="../data/wikitext103_vocab.txt",
 ) -> Counter:
     dataset = load_dataset(base_name, dataset_id, split="train")
@@ -69,9 +70,10 @@ def make_vocab(
         words = re.findall(r"\w+\S*", text)
         counter.update(words)
 
-    with open(output, "w") as f:
-        for word, count in counter.items():
-            f.write(f"{count} {word}\n")
+    if write_output:
+        with open(output, "w") as f:
+            for word, count in counter.items():
+                f.write(f"{count} {word}\n")
 
     print(f"Vocabulary size: {len(counter)}")
     return counter
@@ -139,22 +141,54 @@ def against_gold(gold_path, tokenize):
     }
 
 
-def freq_words_preserved(path, tokenize):
+def freq_words_metrics(path, tokenize):
     freq_vocab = []
     with open(path) as f:
         for line in f:
             freq_vocab.append(line.strip())
 
     preserved = set()
+    n_subwords = []
     for w in freq_vocab:
         pieces = tokenize(w)
+        n_subwords.append(len(pieces))
         if len(pieces) == 1 and pieces[0] == w:
             preserved.add(w)
 
-    n_pres = len(preserved)
-    prop = len(preserved) / len(freq_vocab)
+    preserved_5k = set()
+    for w in freq_vocab[:5000]:
+        pieces = tokenize(w)
+        if len(pieces) == 1 and pieces[0] == w:
+            preserved_5k.add(w)
 
-    return {"n_preserved": n_pres, "proportion": prop}
+    n_pres_10k = len(preserved)
+    prop_10k = len(preserved) / len(freq_vocab)
+
+    n_pres_5k = len(preserved_5k)
+    prop_5k = len(preserved_5k) / 5000
+
+    avg_fertility = sum(n_subwords) / len(n_subwords)
+
+    return {
+        "avg_fertility": avg_fertility,
+        "n_preserved(10k)": n_pres_10k,
+        "proportion(10k)": prop_10k,
+        "n_preserved(5k)": n_pres_5k,
+        "proportion(5k)": prop_5k,
+    }
+
+
+def least_words_fert(tokenize):
+    ct = list(reversed(make_vocab()))
+    least_10k_ct = ct[:10_000]
+    least_10k = [e[0] for e in least_10k_ct]
+
+    n_sw = []
+    for word in least_10k:
+        n_sw.append(len(tokenize(word)))
+    avg_fert = sum(n_sw) / len(n_sw)
+
+    return avg_fert
 
 
 from morfessor_segmenter import MorfessorModel
@@ -171,4 +205,5 @@ tokenizers = {
 }
 
 print(against_gold(GOLD_PATH, tokenizers["morfessor"]))
-print(freq_words_preserved(FREQ_WORDS_PATH, tokenizers["morfessor"]))
+print(freq_words_metrics(FREQ_WORDS_PATH, tokenizers["morfessor"]))
+print(least_words_fert(tokenizers["morfessor"]))
