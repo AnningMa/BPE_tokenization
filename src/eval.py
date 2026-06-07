@@ -24,36 +24,28 @@ def seg_to_vec(pieces: list[str], word_len: int) -> list[int]:
     return vec
 
 
-def pairwise_agreement(corpus_words, tokenizers):
-    all_decisions = defaultdict(list)
+def my_p_r_f1(x, y):
+    x_abs = sum(x)
+    y_abs = sum(y)
+    inter = sum(a == 1 and b == 1 for a, b in zip(x, y))
+    p = inter / x_abs if x_abs > 0 else 0.0
+    r = inter / y_abs if y_abs > 0 else 0.0
+    f1 = 2 * inter / (x_abs + y_abs) if (x_abs + y_abs) > 0 else 0.0
+    return p, r, f1
 
-    for word, freq in corpus_words:
-        if len(word) < 2:
-            continue
 
-        for name, tokenize in tokenizers.items():
-            pieces = tokenize(word)
-            vec = seg_to_vec(pieces, len(word))
-            all_decisions[name].extend(vec * freq)  # weight by freq
+def pairwise_agreement(corpus, tok_a, tok_b) -> Dict[str, float]:
+    vec_a, vec_b = [], []
+    for w in corpus:
+        pieces_a, pieces_b = tok_a(w), tok_b(w)
+        v_a = seg_to_vec(pieces_a, len(w))
+        v_b = seg_to_vec(pieces_b, len(w))
+        vec_a.extend(v_a)
+        vec_b.extend(v_b)
 
-    names = list(tokenizers.keys())
-    res = {}
-
-    for i, a in enumerate(names):
-        for b in names[i + 1 :]:
-            vec_a = all_decisions[a]
-            vec_b = all_decisions[b]
-
-            kappa = cohen_kappa_score(vec_a, vec_b)
-
-            a_abs = sum(vec_a)
-            b_abs = sum(vec_b)
-            intersec = sum(a == 1 and b == 1 for a, b in zip(vec_a, vec_b))
-            f1 = 2 * intersec / (a_abs + b_abs) if (a_abs + b_abs) > 0 else 0.0
-
-            res[(a, b)] = {"kappa": kappa, "f1": f1}
-
-    return res
+    kappa = cohen_kappa_score(vec_a, vec_b)
+    _, _, f1 = my_p_r_f1(vec_a, vec_b)
+    return {"cohen's kappa": kappa, "f1": f1}
 
 
 def make_vocab(
@@ -104,7 +96,7 @@ def get_gold(input_path) -> Dict[str, list]:
     return res
 
 
-def against_gold(gold_path, tokenize):
+def against_gold(gold_path, tokenize) -> Dict[str, float]:
 
     gold = get_gold(gold_path)
     n_words = len(gold)
@@ -123,13 +115,7 @@ def against_gold(gold_path, tokenize):
     avg_spw_pred = sum(n_sw_pred) / n_words
 
     kappa = cohen_kappa_score(vec_pred, vec_gold)
-
-    abs_pred = sum(vec_pred)
-    abs_gold = sum(vec_gold)
-    intersec = sum(a == 1 and b == 1 for a, b in zip(vec_pred, vec_gold))
-    p = intersec / abs_pred if abs_pred > 0 else 0.0
-    r = intersec / abs_gold if abs_gold > 0 else 0.0
-    f1 = 2 * intersec / (abs_pred + abs_gold) if (abs_pred + abs_gold) > 0 else 0.0
+    p, r, f1 = my_p_r_f1(vec_pred, vec_gold)
 
     return {
         "kappa": kappa,
@@ -141,7 +127,8 @@ def against_gold(gold_path, tokenize):
     }
 
 
-def freq_words_metrics(path, tokenize):
+def freq_words_metrics(path, tokenize) -> Dict[str, float]:
+
     freq_vocab = []
     with open(path) as f:
         for line in f:
@@ -178,7 +165,7 @@ def freq_words_metrics(path, tokenize):
     }
 
 
-def least_words_fert(tokenize):
+def least_words_fert(tokenize) -> float:
     ct = list(reversed(make_vocab()))
     least_10k_ct = ct[:10_000]
     least_10k = [e[0] for e in least_10k_ct]
@@ -204,6 +191,25 @@ tokenizers = {
     "morfessor": mo.segment,
 }
 
+gold = get_gold(GOLD_PATH)
+
+"""
+4 个指标：
+
+1. pairwise agreement：输入1个测试集（单词表，我这里暂时用了gold，可以换），
+   2个tokenizer方法，输出2个方法的整个测试集上boundary位置的kappa和f1；
+
+2. against gold：输入gold测试集+1个tokenizer方法，输出和gold对比的kappa，precision，recall，f1，
+   gold的每词平均子词（subword）数，tokenizer预测的每词平均子词数；
+
+3. freq words metrics：对于英语中前10000频繁的词（来源：https://github.com/first20hours/google-10000-english）
+   输入词表路径和1个tokenizer方法，输出这个tokenizer在前10000/5000词中保留（即没做任何切分）的数量和比例，
+   也输出前10000词平均fertility（一个词分出来几个子词）
+
+4. least words fert：输入一个tokenizer方法，输出它在训练集中最罕见的10000词上的平均fertility
+"""
+
+print(pairwise_agreement(gold, tokenizers["porter"], tokenizers["morfessor"]))
 print(against_gold(GOLD_PATH, tokenizers["morfessor"]))
 print(freq_words_metrics(FREQ_WORDS_PATH, tokenizers["morfessor"]))
 print(least_words_fert(tokenizers["morfessor"]))
