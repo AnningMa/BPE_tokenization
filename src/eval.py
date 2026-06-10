@@ -39,6 +39,8 @@ def my_p_r_f1(x, y):
 
 def pairwise_agreement(corpus, tok_a, tok_b) -> Dict[str, float]:
     vec_a, vec_b = [], []
+    per_word_kappas = []
+    per_word_f1s = []
     for w in corpus:
         pieces_a, pieces_b = tok_a(w), tok_b(w)
         v_a = seg_to_vec(pieces_a, len(w))
@@ -46,9 +48,23 @@ def pairwise_agreement(corpus, tok_a, tok_b) -> Dict[str, float]:
         vec_a.extend(v_a)
         vec_b.extend(v_b)
 
+        if len(set(v_a)) > 1 and len(set(v_b)) > 1:
+            per_word_kappas.append(cohen_kappa_score(v_a, v_b, labels=[0, 1]))
+        else:
+            per_word_kappas.append(np.nan)
+        _, _, pw_f1 = my_p_r_f1(v_a, v_b)
+        per_word_f1s.append(pw_f1)
+
     kappa = cohen_kappa_score(vec_a, vec_b)
     _, _, f1 = my_p_r_f1(vec_a, vec_b)
-    return {"cohen's kappa": kappa, "f1": f1}
+    return {
+        "cohen's kappa": kappa,
+        "f1": f1,
+        "per_word_kappa": float(np.nanmean(per_word_kappas))
+        if per_word_kappas
+        else 0.0,
+        "per_word_f1": sum(per_word_f1s) / len(per_word_f1s) if per_word_f1s else 0.0,
+    }
 
 
 _vocab_cache: Counter | None = None
@@ -117,12 +133,24 @@ def against_gold(gold_path, tokenize) -> Dict[str, float]:
     vec_gold = []
     vec_pred = []
     n_sw_pred = []
+    per_word_kappas = []
+    per_word_f1s = []
     for word in gold.keys():
-        vec_gold.extend(seg_to_vec(gold[word], len(word)))
+        v_gold = seg_to_vec(gold[word], len(word))
+        vec_gold.extend(v_gold)
 
         pieces = tokenize(word)
-        vec_pred.extend(seg_to_vec(pieces, len(word)))
+        v_pred = seg_to_vec(pieces, len(word))
+        vec_pred.extend(v_pred)
         n_sw_pred.append(len(pieces))
+
+        if len(set(v_gold)) > 1 and len(set(v_pred)) > 1:
+            per_word_kappas.append(cohen_kappa_score(v_pred, v_gold, labels=[0, 1]))
+        else:
+            per_word_kappas.append(np.nan)
+        _, _, pw_f1 = my_p_r_f1(v_pred, v_gold)
+        per_word_f1s.append(pw_f1)
+
     avg_spw_pred = sum(n_sw_pred) / n_words
 
     kappa = cohen_kappa_score(vec_pred, vec_gold)
@@ -135,6 +163,10 @@ def against_gold(gold_path, tokenize) -> Dict[str, float]:
         "f1": f1,
         "avg_spw_pred": avg_spw_pred,
         "avg_spe_gold": avg_spw_gold,
+        "per_word_kappa": float(np.nanmean(per_word_kappas))
+        if per_word_kappas
+        else 0.0,
+        "per_word_f1": sum(per_word_f1s) / len(per_word_f1s) if per_word_f1s else 0.0,
     }
 
 
@@ -182,7 +214,7 @@ def least_words_fert(tokenize) -> float:
 
     n_sw = []
     for word in least_10k:
-        n_sw.append(len(tokenize(word)))
+        n_sw.append(len(tokenize(word[0])))
     avg_fert = sum(n_sw) / len(n_sw)
 
     return avg_fert
