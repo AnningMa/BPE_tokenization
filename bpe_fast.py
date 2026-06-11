@@ -3,7 +3,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from base import BaseTokenizer
-from utils import pre_tokenize, get_word_freqs as get_word_type_frequencies
+from utils import pre_tokenize,get_word_type_frequencies
 from utils.heap import LazyHeap
 
 
