@@ -6,6 +6,9 @@ import numpy as np
 from datasets import load_dataset
 from sklearn.metrics import cohen_kappa_score
 
+from morfessor_segmenter import MorfessorModel
+from porter_segmenter_nltk import PorterSegmenter
+
 GOLD_PATH = "../data/goldstd_combined.segmentation.eng"
 FREQ_WORDS_PATH = "../data/google-10000-english.txt"
 
@@ -36,6 +39,8 @@ def my_p_r_f1(x, y):
 
 def pairwise_agreement(corpus, tok_a, tok_b) -> Dict[str, float]:
     vec_a, vec_b = [], []
+    per_word_kappas = []
+    per_word_f1s = []
     for w in corpus:
         pieces_a, pieces_b = tok_a(w), tok_b(w)
         v_a = seg_to_vec(pieces_a, len(w))
@@ -43,9 +48,26 @@ def pairwise_agreement(corpus, tok_a, tok_b) -> Dict[str, float]:
         vec_a.extend(v_a)
         vec_b.extend(v_b)
 
+        if len(set(v_a)) > 1 and len(set(v_b)) > 1:
+            per_word_kappas.append(cohen_kappa_score(v_a, v_b, labels=[0, 1]))
+        else:
+            per_word_kappas.append(np.nan)
+        _, _, pw_f1 = my_p_r_f1(v_a, v_b)
+        per_word_f1s.append(pw_f1)
+
     kappa = cohen_kappa_score(vec_a, vec_b)
     _, _, f1 = my_p_r_f1(vec_a, vec_b)
-    return {"cohen's kappa": kappa, "f1": f1}
+    return {
+        "cohen's kappa": kappa,
+        "f1": f1,
+        "per_word_kappa": float(np.nanmean(per_word_kappas))
+        if per_word_kappas
+        else 0.0,
+        "per_word_f1": sum(per_word_f1s) / len(per_word_f1s) if per_word_f1s else 0.0,
+    }
+
+
+_vocab_cache: Counter | None = None
 
 
 def make_vocab(
@@ -54,6 +76,10 @@ def make_vocab(
     write_output=False,
     output="../data/wikitext103_vocab.txt",
 ) -> Counter:
+    global _vocab_cache
+    if _vocab_cache is not None:
+        return _vocab_cache
+
     dataset = load_dataset(base_name, dataset_id, split="train")
     counter = Counter()
 
@@ -68,6 +94,7 @@ def make_vocab(
                 f.write(f"{count} {word}\n")
 
     print(f"Vocabulary size: {len(counter)}")
+    _vocab_cache = counter
     return counter
 
 
@@ -106,12 +133,24 @@ def against_gold(gold_path, tokenize) -> Dict[str, float]:
     vec_gold = []
     vec_pred = []
     n_sw_pred = []
+    per_word_kappas = []
+    per_word_f1s = []
     for word in gold.keys():
-        vec_gold.extend(seg_to_vec(gold[word], len(word)))
+        v_gold = seg_to_vec(gold[word], len(word))
+        vec_gold.extend(v_gold)
 
         pieces = tokenize(word)
-        vec_pred.extend(seg_to_vec(pieces, len(word)))
+        v_pred = seg_to_vec(pieces, len(word))
+        vec_pred.extend(v_pred)
         n_sw_pred.append(len(pieces))
+
+        if len(set(v_gold)) > 1 and len(set(v_pred)) > 1:
+            per_word_kappas.append(cohen_kappa_score(v_pred, v_gold, labels=[0, 1]))
+        else:
+            per_word_kappas.append(np.nan)
+        _, _, pw_f1 = my_p_r_f1(v_pred, v_gold)
+        per_word_f1s.append(pw_f1)
+
     avg_spw_pred = sum(n_sw_pred) / n_words
 
     kappa = cohen_kappa_score(vec_pred, vec_gold)
@@ -124,6 +163,10 @@ def against_gold(gold_path, tokenize) -> Dict[str, float]:
         "f1": f1,
         "avg_spw_pred": avg_spw_pred,
         "avg_spe_gold": avg_spw_gold,
+        "per_word_kappa": float(np.nanmean(per_word_kappas))
+        if per_word_kappas
+        else 0.0,
+        "per_word_f1": sum(per_word_f1s) / len(per_word_f1s) if per_word_f1s else 0.0,
     }
 
 
@@ -139,13 +182,13 @@ def freq_words_metrics(path, tokenize) -> Dict[str, float]:
     for w in freq_vocab:
         pieces = tokenize(w)
         n_subwords.append(len(pieces))
-        if len(pieces) == 1 and pieces[0] == w:
+        if len(pieces) == 1:
             preserved.add(w)
 
     preserved_5k = set()
     for w in freq_vocab[:5000]:
         pieces = tokenize(w)
-        if len(pieces) == 1 and pieces[0] == w:
+        if len(pieces) == 1:
             preserved_5k.add(w)
 
     n_pres_10k = len(preserved)
@@ -166,50 +209,47 @@ def freq_words_metrics(path, tokenize) -> Dict[str, float]:
 
 
 def least_words_fert(tokenize) -> float:
-    ct = list(reversed(make_vocab()))
-    least_10k_ct = ct[:10_000]
-    least_10k = [e[0] for e in least_10k_ct]
+    cpt = make_vocab()
+    least_10k = cpt.most_common()[:-10_001:-1]
 
     n_sw = []
     for word in least_10k:
-        n_sw.append(len(tokenize(word)))
+        n_sw.append(len(tokenize(word[0])))
     avg_fert = sum(n_sw) / len(n_sw)
 
     return avg_fert
 
 
-from morfessor_segmenter import MorfessorModel
-from porter_segmenter_nltk import PorterSegmenter
+if __name__ == "__main__":
+    porter_seg = PorterSegmenter()
 
-porter_seg = PorterSegmenter()
+    mo = MorfessorModel()
+    mo.load("../data/morf_wiki_103.bin")
 
-mo = MorfessorModel()
-mo.load("../data/morf_wiki_103.bin")
+    tokenizers = {
+        "porter": porter_seg.segment,
+        "morfessor": mo.segment,
+    }
 
-tokenizers = {
-    "porter": porter_seg.segment,
-    "morfessor": mo.segment,
-}
+    gold = get_gold(GOLD_PATH)
 
-gold = get_gold(GOLD_PATH)
+    """
+    4 个指标：
 
-"""
-4 个指标：
+    1. pairwise agreement：输入1个测试集（单词表，我这里暂时用了gold，可以换），
+    2个tokenizer方法，输出2个方法的整个测试集上boundary位置的kappa和f1；
 
-1. pairwise agreement：输入1个测试集（单词表，我这里暂时用了gold，可以换），
-   2个tokenizer方法，输出2个方法的整个测试集上boundary位置的kappa和f1；
+    2. against gold：输入gold测试集+1个tokenizer方法，输出和gold对比的kappa，precision，recall，f1，
+    gold的每词平均子词（subword）数，tokenizer预测的每词平均子词数；
 
-2. against gold：输入gold测试集+1个tokenizer方法，输出和gold对比的kappa，precision，recall，f1，
-   gold的每词平均子词（subword）数，tokenizer预测的每词平均子词数；
+    3. freq words metrics：对于英语中前10000频繁的词（来源：https://github.com/first20hours/google-10000-english）
+    输入词表路径和1个tokenizer方法，输出这个tokenizer在前10000/5000词中保留（即没做任何切分）的数量和比例，
+    也输出前10000词平均fertility（一个词分出来几个子词）
 
-3. freq words metrics：对于英语中前10000频繁的词（来源：https://github.com/first20hours/google-10000-english）
-   输入词表路径和1个tokenizer方法，输出这个tokenizer在前10000/5000词中保留（即没做任何切分）的数量和比例，
-   也输出前10000词平均fertility（一个词分出来几个子词）
+    4. least words fert：输入一个tokenizer方法，输出它在训练集中最罕见的10000词上的平均fertility
+    """
 
-4. least words fert：输入一个tokenizer方法，输出它在训练集中最罕见的10000词上的平均fertility
-"""
-
-print(pairwise_agreement(gold, tokenizers["porter"], tokenizers["morfessor"]))
-print(against_gold(GOLD_PATH, tokenizers["morfessor"]))
-print(freq_words_metrics(FREQ_WORDS_PATH, tokenizers["morfessor"]))
-print(least_words_fert(tokenizers["morfessor"]))
+    print(pairwise_agreement(gold, tokenizers["porter"], tokenizers["morfessor"]))
+    print(against_gold(GOLD_PATH, tokenizers["morfessor"]))
+    print(freq_words_metrics(FREQ_WORDS_PATH, tokenizers["morfessor"]))
+    print(least_words_fert(tokenizers["morfessor"]))
