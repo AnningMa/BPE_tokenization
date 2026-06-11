@@ -1,4 +1,5 @@
 import re
+import time
 from collections import Counter, defaultdict
 from typing import Dict
 
@@ -6,8 +7,12 @@ import numpy as np
 from datasets import load_dataset
 from sklearn.metrics import cohen_kappa_score
 
+# from bpe_fast import FastBPE
+from bpe_naive import NaiveBPE
 from morfessor_segmenter import MorfessorModel
 from porter_segmenter_nltk import PorterSegmenter
+from wordpiece_baseline import encode_word_type, train_wordpiece
+from wordpiece_fast_tokenization import WordPieceTrieTokenizer
 
 GOLD_PATH = "../data/goldstd_combined.segmentation.eng"
 FREQ_WORDS_PATH = "../data/google-10000-english.txt"
@@ -37,7 +42,7 @@ def my_p_r_f1(x, y):
     return p, r, f1
 
 
-def pairwise_agreement(corpus, tok_a, tok_b) -> Dict[str, float]:
+def pairwise_agreement(corpus, tok_a, tok_b) -> Dict:
     vec_a, vec_b = [], []
     per_word_kappas = []
     per_word_f1s = []
@@ -49,16 +54,18 @@ def pairwise_agreement(corpus, tok_a, tok_b) -> Dict[str, float]:
         vec_b.extend(v_b)
 
         if len(set(v_a)) > 1 and len(set(v_b)) > 1:
-            per_word_kappas.append(cohen_kappa_score(v_a, v_b, labels=[0, 1]))
+            kw = cohen_kappa_score(v_a, v_b, labels=[0, 1])
         else:
-            per_word_kappas.append(np.nan)
+            kw = 1.0 if v_a == v_b else 0.0
+
+        per_word_kappas.append(kw)
         _, _, pw_f1 = my_p_r_f1(v_a, v_b)
         per_word_f1s.append(pw_f1)
 
     kappa = cohen_kappa_score(vec_a, vec_b)
     _, _, f1 = my_p_r_f1(vec_a, vec_b)
     return {
-        "cohen's kappa": kappa,
+        "kappa": kappa,
         "f1": f1,
         "per_word_kappa": float(np.nanmean(per_word_kappas))
         if per_word_kappas
@@ -123,7 +130,7 @@ def get_gold(input_path) -> Dict[str, list]:
     return res
 
 
-def against_gold(gold_path, tokenize) -> Dict[str, float]:
+def against_gold(gold_path, tokenize) -> Dict:
 
     gold = get_gold(gold_path)
     n_words = len(gold)
@@ -162,7 +169,7 @@ def against_gold(gold_path, tokenize) -> Dict[str, float]:
         "recall": r,
         "f1": f1,
         "avg_spw_pred": avg_spw_pred,
-        "avg_spe_gold": avg_spw_gold,
+        "avg_spw_gold": avg_spw_gold,
         "per_word_kappa": float(np.nanmean(per_word_kappas))
         if per_word_kappas
         else 0.0,
@@ -170,7 +177,7 @@ def against_gold(gold_path, tokenize) -> Dict[str, float]:
     }
 
 
-def freq_words_metrics(path, tokenize) -> Dict[str, float]:
+def freq_words_metrics(path, tokenize) -> Dict:
 
     freq_vocab = []
     with open(path) as f:
@@ -185,32 +192,32 @@ def freq_words_metrics(path, tokenize) -> Dict[str, float]:
         if len(pieces) == 1:
             preserved.add(w)
 
-    preserved_5k = set()
-    for w in freq_vocab[:5000]:
+    preserved_1k = set()
+    for w in freq_vocab[:1000]:
         pieces = tokenize(w)
         if len(pieces) == 1:
-            preserved_5k.add(w)
+            preserved_1k.add(w)
 
     n_pres_10k = len(preserved)
-    prop_10k = len(preserved) / len(freq_vocab)
+    # prop_10k = len(preserved) / len(freq_vocab)
 
-    n_pres_5k = len(preserved_5k)
-    prop_5k = len(preserved_5k) / 5000
+    n_pres_1k = len(preserved_1k)
+    # prop_1k = len(preserved_1k) / 1000
 
     avg_fertility = sum(n_subwords) / len(n_subwords)
 
     return {
         "avg_fertility": avg_fertility,
         "n_preserved(10k)": n_pres_10k,
-        "proportion(10k)": prop_10k,
-        "n_preserved(5k)": n_pres_5k,
-        "proportion(5k)": prop_5k,
+        # "proportion(10k)": prop_10k,
+        "n_preserved(1k)": n_pres_1k,
+        # "proportion(1k)": prop_1k,
     }
 
 
 def least_words_fert(tokenize) -> float:
     cpt = make_vocab()
-    least_10k = cpt.most_common()[:-10_001:-1]
+    least_10k = cpt.most_common()[:-1_001:-1]
 
     n_sw = []
     for word in least_10k:
@@ -220,18 +227,76 @@ def least_words_fert(tokenize) -> float:
     return avg_fert
 
 
+def eval_run(tok: str):
+    print(f"\n---{tok}---")
+    res_gold = against_gold(GOLD_PATH, tokenizers[tok])
+    res_freq = freq_words_metrics(FREQ_WORDS_PATH, tokenizers[tok])
+    res_rare = least_words_fert(tokenizers[tok])
+    print("Against gold set:")
+    print(f"""Precision: {res_gold["precision"]:.3f};
+Recall: {res_gold["recall"]:.3f};
+F1 score:  {res_gold["f1"]:.3f};
+Average F1 per word: {res_gold["per_word_f1"]:.3f};
+Average number of subwords per word (gold set): {res_gold["avg_spw_gold"]:.3f};
+Average number of subwords per word (tokenizer): {res_gold["avg_spw_pred"]:.3f};
+""")
+    print("On frequent words:")
+    print(f"""Average fertility: {res_freq["avg_fertility"]:.3f};
+Number of preserved word types (among top 10k): {res_freq["n_preserved(10k)"]};
+Number of preserved word types (among top 1k): {res_freq["n_preserved(1k)"]};
+""")
+    print("On rare words:")
+    print(
+        f"Average fertility (among the most rare 1k of the training corpus): {res_rare:.3f}"
+    )
+
+
 if __name__ == "__main__":
     porter_seg = PorterSegmenter()
-
     mo = MorfessorModel()
     mo.load("../data/morf_wiki_103.bin")
+    vocab = dict(make_vocab())
+
+    print("Training naive BPE tokenizer...")
+    bpe = NaiveBPE()
+    t0 = time.perf_counter()
+    bpe.train(vocab_size=1000, word_freqs=vocab)
+    t1 = time.perf_counter()
+    print(f"Naive BPE trained in {t1 - t0:.2f}s.")
+
+    """
+    print("\nTraining fast BPE tokenizer...")
+    f_bpe = FastBPE()
+    t0 = time.perf_counter()
+    f_bpe.train(vocab_size=1000, word_freqs=vocab)
+    t1 = time.perf_counter()
+    print(f"Fast BPE trained in {t1 - t0:.2f}s.")
+    """
+
+    print("\nTraining Word-Piece tokenizer...")
+    t0 = time.perf_counter()
+    wp_voc, _, _ = train_wordpiece(
+        vocab,
+        1000,
+    )
+    t1 = time.perf_counter()
+    print(f"Word-Piece trained in {t1 - t0:.2f}s")
+
+    def wpc(word, vocab=wp_voc):
+        return encode_word_type(word, vocab)
+
+    f_wpc = WordPieceTrieTokenizer(wp_voc)
 
     tokenizers = {
         "porter": porter_seg.segment,
         "morfessor": mo.segment,
+        "bpe": bpe.tokenize,
+        # "fast_bpe": f_bpe.tokenize,
+        "wpc": wpc,
+        "fast_wpc": f_wpc.encode_word_type,
     }
 
-    gold = get_gold(GOLD_PATH)
+    gold = get_gold(GOLD_PATH).keys()
 
     """
     4 个指标：
@@ -248,8 +313,15 @@ if __name__ == "__main__":
 
     4. least words fert：输入一个tokenizer方法，输出它在训练集中最罕见的10000词上的平均fertility
     """
+    print("\n---Agreement---")
+    print(
+        f"BPE vs WordPiece: {pairwise_agreement(gold, tokenizers['bpe'], tokenizers['wpc'])}"
+    )
+    print(
+        f"BPE vs morfessor: {pairwise_agreement(gold, tokenizers['bpe'], tokenizers['morfessor'])}"
+    )
 
-    print(pairwise_agreement(gold, tokenizers["porter"], tokenizers["morfessor"]))
-    print(against_gold(GOLD_PATH, tokenizers["morfessor"]))
-    print(freq_words_metrics(FREQ_WORDS_PATH, tokenizers["morfessor"]))
-    print(least_words_fert(tokenizers["morfessor"]))
+    eval_run("bpe")
+    eval_run("wpc")
+    # eval_run("fast_bpe")
+    eval_run("fast_wpc")
