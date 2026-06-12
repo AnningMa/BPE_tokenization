@@ -1,7 +1,7 @@
 import re
 import time
 from collections import Counter, defaultdict
-from typing import Dict
+from typing import Dict, List
 
 import numpy as np
 from datasets import load_dataset
@@ -74,7 +74,8 @@ def pairwise_agreement(corpus, tok_a, tok_b) -> Dict:
     }
 
 
-_vocab_cache: Counter | None = None
+_train_vocab_cache: Counter | None = None
+_test_vocab_cache: Counter | None = None
 
 
 def make_vocab(
@@ -82,12 +83,18 @@ def make_vocab(
     dataset_id="wikitext-103-v1",
     write_output=False,
     output="../data/wikitext103_vocab.txt",
+    split="train",
 ) -> Counter:
-    global _vocab_cache
-    if _vocab_cache is not None:
-        return _vocab_cache
+    if split == "train":
+        global _train_vocab_cache
+        if _train_vocab_cache is not None:
+            return _train_vocab_cache
+    elif split == "test":
+        global _test_vocab_cache
+        if _test_vocab_cache is not None:
+            return _test_vocab_cache
 
-    dataset = load_dataset(base_name, dataset_id, split="train")
+    dataset = load_dataset(base_name, dataset_id, split=split)
     counter = Counter()
 
     for e in dataset:
@@ -100,8 +107,13 @@ def make_vocab(
             for word, count in counter.items():
                 f.write(f"{count} {word}\n")
 
-    print(f"Vocabulary size: {len(counter)}")
-    _vocab_cache = counter
+    print(f"{split} vocabulary size: {len(counter)}")
+
+    if split == "train":
+        _train_vocab_cache = counter
+    elif split == "test":
+        _test_vocab_cache = counter
+
     return counter
 
 
@@ -177,12 +189,25 @@ def against_gold(gold_path, tokenize) -> Dict:
     }
 
 
+_freq_vocab: List | None = None
+
+
+def get_freq_vocab(path):
+    global _freq_vocab
+    if _freq_vocab is not None:
+        return _freq_vocab
+    else:
+        freq_vocab = []
+        with open(path) as f:
+            for line in f:
+                freq_vocab.append(line.strip())
+        _freq_vocab = freq_vocab
+        return freq_vocab
+
+
 def freq_words_metrics(path, tokenize) -> Dict:
 
-    freq_vocab = []
-    with open(path) as f:
-        for line in f:
-            freq_vocab.append(line.strip())
+    freq_vocab = get_freq_vocab(path)
 
     preserved = set()
     n_subwords = []
@@ -291,37 +316,44 @@ if __name__ == "__main__":
         "porter": porter_seg.segment,
         "morfessor": mo.segment,
         "bpe": bpe.tokenize,
+        "bpe_long": bpe.tokenize_longest,
         # "fast_bpe": f_bpe.tokenize,
         "wpc": wpc,
         "fast_wpc": f_wpc.encode_word_type,
     }
 
-    gold = get_gold(GOLD_PATH).keys()
+    test_vocab = dict(make_vocab(split="test"))
+    agree_corpus = test_vocab.keys()
 
     """
     4 个指标：
 
-    1. pairwise agreement：输入1个测试集（单词表，我这里暂时用了gold，可以换），
+    1. pairwise agreement：输入1个测试集（单词表，我这里暂时用了wiki103的test split，可以换），
     2个tokenizer方法，输出2个方法的整个测试集上boundary位置的kappa和f1；
 
     2. against gold：输入gold测试集+1个tokenizer方法，输出和gold对比的kappa，precision，recall，f1，
     gold的每词平均子词（subword）数，tokenizer预测的每词平均子词数；
 
     3. freq words metrics：对于英语中前10000频繁的词（来源：https://github.com/first20hours/google-10000-english）
-    输入词表路径和1个tokenizer方法，输出这个tokenizer在前10000/5000词中保留（即没做任何切分）的数量和比例，
+    输入词表路径和1个tokenizer方法，输出这个tokenizer在前10000/1000词中保留（即没做任何切分）的数量和比例，
     也输出前10000词平均fertility（一个词分出来几个子词）
 
     4. least words fert：输入一个tokenizer方法，输出它在训练集中最罕见的10000词上的平均fertility
     """
     print("\n---Agreement---")
-    print(
-        f"BPE vs WordPiece: {pairwise_agreement(gold, tokenizers['bpe'], tokenizers['wpc'])}"
-    )
-    print(
-        f"BPE vs morfessor: {pairwise_agreement(gold, tokenizers['bpe'], tokenizers['morfessor'])}"
-    )
+    print("BPE vs WordPiece:")
+    res = pairwise_agreement(agree_corpus, tokenizers["bpe"], tokenizers["wpc"])
+    print(f"F1: {res['f1']:.3f}\nPer word F1: {res['per_word_f1']:.3f}")
+    print("BPE (longest) vs WordPiece:")
+    res = pairwise_agreement(agree_corpus, tokenizers["bpe_long"], tokenizers["wpc"])
+    print(f"F1: {res['f1']:.3f}\nPer word F1: {res['per_word_f1']:.3f}")
+    print("BPE vs morfessor:")
+    res_1 = pairwise_agreement(agree_corpus, tokenizers["bpe"], tokenizers["morfessor"])
+    print(f"F1: {res_1['f1']:.3f}\nPer word F1: {res_1['per_word_f1']:.3f}")
 
+    eval_run("morfessor")
     eval_run("bpe")
+    eval_run("bpe_long")
     eval_run("wpc")
     # eval_run("fast_bpe")
     eval_run("fast_wpc")
