@@ -9,27 +9,22 @@ vocabulary in tries and finds the longest valid match by traversing characters.
 
 from __future__ import annotations
 
-import re
 import time
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
+from collections.abc import Sequence
+from utils import pre_tokenize
 
 
 UNK_TOKEN = "[UNK]"
 CONTINUATION_PREFIX = "##"
 
 
-def pre_tokenize(text: str) -> List[str]:
-    
-    return re.findall(r"[a-z]+", text.lower())
-
-
 @dataclass
 class TrieNode:
     """A node in a trie storing WordPiece subword types."""
 
-    children: Dict[str, "TrieNode"] = field(default_factory=dict)
-    subword_type: Optional[str] = None
+    children: dict[str, "TrieNode"] = field(default_factory=dict)
+    subword_type: str | None = None
 
 
 class WordPieceTrieTokenizer:
@@ -44,7 +39,7 @@ class WordPieceTrieTokenizer:
 
     def __init__(
         self,
-        vocabulary: Set[str],
+        vocabulary: set[str],
         unk_token: str = UNK_TOKEN,
         continuation_prefix: str = CONTINUATION_PREFIX,
     ) -> None:
@@ -89,13 +84,13 @@ class WordPieceTrieTokenizer:
         word_type: str,
         start_position: int,
         trie_root: TrieNode,
-    ) -> Tuple[Optional[str], int]:
+    ) -> tuple[str | None, int]:
         """
         Return the longest subword type matching word_type[start_position:].
         If no vocabulary item matches from this position, returns (None, start_position).
         """
         node = trie_root
-        best_subword_type: Optional[str] = None
+        best_subword_type: str | None = None
         best_end_position = start_position
         position = start_position
 
@@ -108,14 +103,14 @@ class WordPieceTrieTokenizer:
 
         return best_subword_type, best_end_position
 
-    def encode_word_type(self, word_type: str) -> List[str]:
+    def encode_word_type(self, word_type: str) -> list[str]:
         """
         Segment one word type into WordPiece subword tokens.
         This is the fast version of greedy longest-match-first tokenization. It resolves segmentation ambiguity by selecting the longest valid subword
         type at each position.
         """
         word_type = word_type.lower()
-        subword_tokens: List[str] = []
+        subword_tokens: list[str] = []
         start_position = 0
 
         while start_position < len(word_type):
@@ -132,12 +127,12 @@ class WordPieceTrieTokenizer:
 
         return subword_tokens
 
-    def tokenize_text(self, text: str) -> List[str]:
+    def tokenize_text(self, text: str) -> list[str]:
         """
         Tokenize running text into WordPiece subword tokens.
         The text is first pre-tokenized into word tokens. Each word token is then segmented into subword tokens using the trie-based tokenizer.
         """
-        output_subword_tokens: List[str] = []
+        output_subword_tokens: list[str] = []
         for word_token in pre_tokenize(text):
             output_subword_tokens.extend(self.encode_word_type(word_token))
         return output_subword_tokens
@@ -145,21 +140,21 @@ class WordPieceTrieTokenizer:
 
 def encode_word_type_baseline(
     word_type: str,
-    vocabulary: Set[str],
+    vocabulary: set[str],
     unk_token: str = UNK_TOKEN,
     continuation_prefix: str = CONTINUATION_PREFIX,
-) -> List[str]:
+) -> list[str]:
     """
     Baseline WordPiece longest-match-first tokenization.
     This version repeatedly creates candidate substrings from longest to shortest and checks whether they exist in the vocabulary. It is simple and useful for
     correctness checks, but less efficient than trie traversal.
     """
     word_type = word_type.lower()
-    subword_tokens: List[str] = []
+    subword_tokens: list[str] = []
     start_position = 0
 
     while start_position < len(word_type):
-        matched_subword: Optional[str] = None
+        matched_subword: str | None = None
         matched_end_position = start_position
 
         for end_position in range(len(word_type), start_position, -1):
@@ -185,7 +180,7 @@ def encode_word_type_baseline(
 
 def compare_baseline_and_fast_outputs(
     word_types: Sequence[str],
-    vocabulary: Set[str],
+    vocabulary: set[str],
 ) -> bool:
     """
     Check whether baseline and fast tokenization return identical outputs.
@@ -208,8 +203,8 @@ def compare_baseline_and_fast_outputs(
 
 def time_baseline_and_fast_tokenization(
     word_tokens: Sequence[str],
-    vocabulary: Set[str],
-) -> Dict[str, object]:
+    vocabulary: set[str],
+) -> dict[str, object]:
     """
     Measure tokenization time on the same sequence of word tokens.
     This compares only the tokenization phase. It does not include vocabulary learning time and does not include trie construction time in the fast timing,
@@ -241,8 +236,8 @@ def time_baseline_and_fast_tokenization(
 
 def evaluate_fast_tokenizer_on_word_tokens(
     word_tokens: Sequence[str],
-    vocabulary: Set[str],
-) -> Dict[str, float]:
+    vocabulary: set[str],
+) -> dict[str, float]:
     """Compute simple tokenization metrics on word-token occurrences."""
     fast_tokenizer = WordPieceTrieTokenizer(vocabulary)
     outputs = [fast_tokenizer.encode_word_type(word_token) for word_token in word_tokens]

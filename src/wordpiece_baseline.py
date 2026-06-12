@@ -1,40 +1,14 @@
-from collections import Counter, defaultdict
+from collections import defaultdict
 import csv
-import re
 import time
-from typing import Dict, List, Tuple, Set, Iterable, Optional, Any
+from collections.abc import Iterable
+from utils import load_corpus, pre_tokenize, get_word_type_frequencies
 
 # Phase 0: corpus loading and pre-tokenization
 
-def load_corpus(path: str) -> List[str]:
-    
-    with open(path, "r", encoding="utf-8") as f:
-        return [line.strip() for line in f if line.strip()]
-
-
-def pre_tokenize(text: str) -> List[str]:
-    
-    text = text.lower()
-    word_tokens = re.findall(r"[a-z]+", text)
-    return word_tokens
-
-
-def get_word_type_frequencies(corpus: Iterable[str]) -> Dict[str, int]:
-    """
-    Count word token occurrences and return frequencies for each word type.
-    Returns:
-        A dictionary mapping each word type to its frequency in the corpus.
-        Example: {"happy": 3, "unhappy": 2}
-    """
-    word_type_freqs = Counter()
-    for line in corpus:
-        word_tokens = pre_tokenize(line)
-        word_type_freqs.update(word_tokens)
-    return dict(word_type_freqs)
-
 # Phase 1: WordPiece vocabulary learning
 
-def split_word_type_into_initial_subwords(word_type: str) -> List[str]:
+def split_word_type_into_initial_subwords(word_type: str) -> list[str]:
     """
     Split a word type into initial character-level WordPiece subword types.
     Example:
@@ -46,9 +20,9 @@ def split_word_type_into_initial_subwords(word_type: str) -> List[str]:
 
 
 def initialize_wordpiece_vocabulary(
-    word_type_freqs: Dict[str, int],
-    special_tokens: Optional[List[str]] = None,
-) -> Tuple[List[str], Dict[str, List[str]]]:
+    word_type_freqs: dict[str, int],
+    special_tokens: list[str]| None = None,
+) -> tuple[list[str], dict[str, list[str]]]:
     """
     Initialize the WordPiece vocabulary and the current split of each word type.
     Returns:
@@ -58,11 +32,11 @@ def initialize_wordpiece_vocabulary(
             Mapping from each word type to its current sequence of subword types.
     """
     if special_tokens is None:
-        special_tokens = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]
+        special_tokens = ["[UNK]"]
 
     vocabulary_list = list(special_tokens)
-    alphabet: Set[str] = set()
-    word_type_splits: Dict[str, List[str]] = {}
+    alphabet: set[str] = set()
+    word_type_splits: dict[str, list[str]] = {}
 
     for word_type in word_type_freqs:
         split = split_word_type_into_initial_subwords(word_type)
@@ -74,9 +48,9 @@ def initialize_wordpiece_vocabulary(
 
 
 def compute_pair_scores(
-    word_type_splits: Dict[str, List[str]],
-    word_type_freqs: Dict[str, int],
-) -> Dict[Tuple[str, str], float]:
+    word_type_splits: dict[str, list[str]],
+    word_type_freqs: dict[str, int],
+) -> dict[tuple[str, str], float]:
     """
     Compute WordPiece scores for all adjacent subword pairs.
     score(pair) = pair_frequency / (frequency_of_first_subword * frequency_of_second_subword)
@@ -96,7 +70,7 @@ def compute_pair_scores(
             pair = (split[i], split[i + 1])
             pair_freqs[pair] += word_frequency
 
-    scores: Dict[Tuple[str, str], float] = {}
+    scores: dict[tuple[str, str], float] = {}
     for pair, pair_frequency in pair_freqs.items():
         first_subword, second_subword = pair
         scores[pair] = pair_frequency / (
@@ -109,8 +83,8 @@ def compute_pair_scores(
 def merge_pair_in_word_type_splits(
     first_subword: str,
     second_subword: str,
-    word_type_splits: Dict[str, List[str]],
-) -> Tuple[Dict[str, List[str]], str]:
+    word_type_splits: dict[str, list[str]],
+) -> tuple[dict[str, list[str]], str]:
     """
     Merge a selected adjacent pair in all current word-type splits.
     Examples:
@@ -122,10 +96,10 @@ def merge_pair_in_word_type_splits(
     else:
         new_subword_type = first_subword + second_subword
 
-    updated_word_type_splits: Dict[str, List[str]] = {}
+    updated_word_type_splits: dict[str, list[str]] = {}
 
     for word_type, split in word_type_splits.items():
-        updated_split: List[str] = []
+        updated_split: list[str] = []
         i = 0
 
         while i < len(split):
@@ -146,11 +120,11 @@ def merge_pair_in_word_type_splits(
 
 
 def train_wordpiece(
-    word_type_freqs: Dict[str, int],
+    word_type_freqs: dict[str, int],
     vocab_size: int,
-    special_tokens: Optional[List[str]] = None,
+    special_tokens: list[str] | None = None,
     verbose: bool = False,
-) -> Tuple[Set[str], Dict[str, List[str]], List[Tuple[str, str, str]]]:
+) -> tuple[set[str], dict[str, list[str]], list[tuple[str, str, str]]]:
     """
     Train a baseline WordPiece vocabulary. This function is the vocabulary learning phase, not the tokenization phase.
     Args:
@@ -166,8 +140,8 @@ def train_wordpiece(
     vocabulary_list, word_type_splits = initialize_wordpiece_vocabulary(
         word_type_freqs, special_tokens
     )
-    vocabulary: Set[str] = set(vocabulary_list)
-    merges: List[Tuple[str, str, str]] = []
+    vocabulary: set[str] = set(vocabulary_list)
+    merges: list[tuple[str, str, str]] = []
 
     while len(vocabulary) < vocab_size:
         scores = compute_pair_scores(word_type_splits, word_type_freqs)
@@ -201,9 +175,9 @@ def train_wordpiece(
 
 def encode_word_type(
     word_type: str,
-    vocabulary: Set[str],
+    vocabulary: set[str],
     unk_token: str = "[UNK]",
-) -> List[str]:
+) -> list[str]:
     """
     Tokenize one pre-tokenized word using greedy longest-match-first.
     This is the WordPiece tokenization phase. It uses the final vocabulary learned in Phase 1 and resolves segmentation ambiguity by selecting the
@@ -211,12 +185,12 @@ def encode_word_type(
     If no valid segmentation is found, return [UNK] for the whole word.
     """
     word_type = word_type.lower()
-    subword_tokens: List[str] = []
+    subword_tokens: list[str] = []
     start = 0
 
     while start < len(word_type):
         end = len(word_type)
-        current_subword: Optional[str] = None
+        current_subword: str | None = None
 
         while start < end:
             candidate = word_type[start:end]
@@ -238,12 +212,12 @@ def encode_word_type(
     return subword_tokens
 
 
-def tokenize_wordpiece(text: str, vocabulary: Set[str]) -> List[str]:
+def tokenize_wordpiece(text: str, vocabulary: set[str]) -> list[str]:
     """
     Tokenize a text into WordPiece subword tokens.
     Pre-tokenize the text into word tokens and tokenize each word token into WordPiece subword tokens.
     """
-    output_subword_tokens: List[str] = []
+    output_subword_tokens: list[str] = []
 
     for word_token in pre_tokenize(text):
         output_subword_tokens.extend(encode_word_type(word_token, vocabulary))
@@ -254,9 +228,9 @@ def tokenize_wordpiece(text: str, vocabulary: Set[str]) -> List[str]:
 # Timing and simple tokenizer evaluation
 
 def evaluate_wordpiece_on_word_types(
-    test_word_types: List[str],
-    vocabulary: Set[str],
-) -> Dict[str, float]:
+    test_word_types: list[str],
+    vocabulary: set[str],
+) -> dict[str, float]:
     """
     Evaluate tokenization on a list of unique word types.
     Metrics:
@@ -288,13 +262,13 @@ def evaluate_wordpiece_on_word_types(
 
 def evaluate_wordpiece_on_text(
     texts: Iterable[str],
-    vocabulary: Set[str],
-) -> Dict[str, float]:
+    vocabulary: set[str],
+) -> dict[str, float]:
     """
     Evaluate tokenization on running text, using word tokens as occurrences.
     This complements type-level evaluation. A frequent word contributes more than a rare word because we count occurrences in the text.
     """
-    word_tokens: List[str] = []
+    word_tokens: list[str] = []
     for text in texts:
         word_tokens.extend(pre_tokenize(text))
 
@@ -322,10 +296,10 @@ def evaluate_wordpiece_on_text(
 
 
 def time_training(
-    word_type_freqs: Dict[str, int],
+    word_type_freqs: dict[str, int],
     vocab_size: int,
-    special_tokens: Optional[List[str]] = None,
-) -> Tuple[Set[str], Dict[str, List[str]], List[Tuple[str, str, str]], float]:
+    special_tokens: list[str] | None = None,
+) -> tuple[set[str], dict[str, list[str]], list[tuple[str, str, str]], float]:
     """
     Train WordPiece and return the training time.
     Useful for comparing baseline and fast vocabulary-learning implementations.
@@ -340,7 +314,7 @@ def time_training(
 
 # Saving outputs
 
-def save_vocab(vocabulary: Set[str], path: str) -> None:
+def save_vocab(vocabulary: set[str], path: str) -> None:
     
     with open(path, "w", encoding="utf-8") as f:
         for subword_type in sorted(vocabulary):
@@ -348,8 +322,8 @@ def save_vocab(vocabulary: Set[str], path: str) -> None:
 
 
 def save_tokenization_examples(
-    test_word_types: List[str],
-    vocabulary: Set[str],
+    test_word_types: list[str],
+    vocabulary: set[str],
     path: str,
 ) -> None:
    
@@ -365,18 +339,18 @@ def save_tokenization_examples(
 
 def get_all_possible_segmentations(
     word_type: str,
-    vocabulary: Set[str],
+    vocabulary: set[str],
     unk_token: str = "[UNK]",
-) -> List[List[str]]:
+) -> list[list[str]]:
     """
     Enumerate all possible segmentations of one word type under a vocabulary.
     This function is not used by the tokenizer. It is useful for showing why an ambiguity-resolution strategy is needed. WordPiece resolves this ambiguity
     with greedy longest-match-first tokenization.
     """
     word_type = word_type.lower()
-    results: List[List[str]] = []
+    results: list[list[str]] = []
 
-    def backtrack(start: int, current: List[str]) -> None:
+    def backtrack(start: int, current: list[str]) -> None:
         if start == len(word_type):
             results.append(current.copy())
             return
@@ -394,7 +368,7 @@ def get_all_possible_segmentations(
     return results if results else [[unk_token]]
 
 
-def ambiguity_demo() -> Dict[str, Any]:
+def ambiguity_demo() -> dict[str, any]:
     """
     Return a small example showing segmentation ambiguity and its resolution.
     """
