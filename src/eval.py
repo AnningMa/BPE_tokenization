@@ -1,6 +1,8 @@
+import argparse
 import re
 import time
 from collections import Counter, defaultdict
+from pathlib import Path
 from typing import Dict, List
 
 import numpy as np
@@ -11,11 +13,13 @@ from sklearn.metrics import cohen_kappa_score
 from bpe_naive import NaiveBPE
 from morfessor_segmenter import MorfessorModel
 from porter_segmenter_nltk import PorterSegmenter
-from wordpiece_baseline import encode_word_type, train_wordpiece
+from wordpiece_baseline import encode_word_type, save_vocab, train_wordpiece
 from wordpiece_fast_tokenization import WordPieceTrieTokenizer
 
-GOLD_PATH = "../data/goldstd_combined.segmentation.eng"
-FREQ_WORDS_PATH = "../data/google-10000-english.txt"
+GOLD_PATH = Path(__file__).parent.parent / "data" / "goldstd_combined.segmentation.eng"
+# "../data/goldstd_combined.segmentation.eng"
+FREQ_WORDS_PATH = Path(__file__).parent.parent / "data" / "google-10000-english.txt"
+# "../data/google-10000-english.txt"
 
 
 def seg_to_vec(pieces: list[str], word_len: int) -> list[int]:
@@ -98,8 +102,8 @@ def make_vocab(
     counter = Counter()
 
     for e in dataset:
-        text = e["text"].lower()
-        words = re.findall(r"\w+\S*", text)
+        text = e["text"].strip()
+        words = re.findall(r"[A-Za-z0-9]+", text)
         counter.update(words)
 
     if write_output:
@@ -283,6 +287,12 @@ Number of preserved word types (among top 1k): {res_freq["n_preserved(1k)"]};
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--only-eg", action="store_true")
+    args = parser.parse_args()
+
+    SAVE_VOCAB_PATH = Path(__file__).parent.parent / "data"
+
     porter_seg = PorterSegmenter()
     mo = MorfessorModel()
     mo.load("../data/morf_wiki_103.bin")
@@ -294,6 +304,8 @@ if __name__ == "__main__":
     bpe.train(vocab_size=1000, word_freqs=vocab)
     t1 = time.perf_counter()
     print(f"Naive BPE trained in {t1 - t0:.2f}s.")
+    save_vocab(set(bpe.vocab), str(SAVE_VOCAB_PATH / "bpe-vocab.txt"))
+    print(f"BPE vocabulary saved to {str(SAVE_VOCAB_PATH / 'bpe-vocab.txt')}")
 
     """
     print("\nTraining fast BPE tokenizer...")
@@ -312,6 +324,8 @@ if __name__ == "__main__":
     )
     t1 = time.perf_counter()
     print(f"Word-Piece trained in {t1 - t0:.2f}s")
+    save_vocab(wp_voc, str(SAVE_VOCAB_PATH / "wp-vocab.txt"))
+    print(f"WordPiece vocabulary saved to: {str(SAVE_VOCAB_PATH / 'wp-vocab.txt')}")
 
     def wpc(word, vocab=wp_voc):
         return encode_word_type(word, vocab)
@@ -346,15 +360,26 @@ if __name__ == "__main__":
 
     4. least words fert：输入一个tokenizer方法，输出它在训练集中最罕见的10000词上的平均fertility
     """
-    print("\n---Agreement---")
-    compare_run("bpe", "wpc")
-    compare_run("bpe_long", "wpc")
-    compare_run("bpe", "morfessor")
-    compare_run("wpc", "morfessor")
 
-    eval_run("morfessor")
-    eval_run("bpe")
-    eval_run("bpe_long")
-    eval_run("wpc")
-    # eval_run("fast_bpe")
-    eval_run("fast_wpc")
+    ONLY_EXAMPLES = False
+
+    if not args.only_eg:
+        print("\n---Agreement---")
+        compare_run("bpe", "wpc")
+        compare_run("bpe_long", "wpc")
+        compare_run("bpe", "morfessor")
+        compare_run("wpc", "morfessor")
+
+        eval_run("morfessor")
+        eval_run("bpe")
+        eval_run("bpe_long")
+        eval_run("wpc")
+        # eval_run("fast_bpe")
+        eval_run("fast_wpc")
+
+    print("\n---Examples---")
+    words = ["unbelievable", "tokenization", "preprocessing", "cats", "the"]
+    for tok in tokenizers.keys():
+        print(tok)
+        for w in words:
+            print(f"{w} -> {tokenizers[tok](w)}")
