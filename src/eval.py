@@ -252,6 +252,12 @@ def least_words_fert(tokenize) -> float:
     return avg_fert
 
 
+def compare_run(tok_a: str, tok_b: str):
+    print(f"\n---{tok_a} vs {tok_b}---")
+    res = pairwise_agreement(agree_corpus, tokenizers[tok_a], tokenizers[tok_b])
+    print(f"F1: {res['f1']:.3f}\nAverage per word F1: {res['per_word_f1']:.3f}")
+
+
 def eval_run(tok: str):
     print(f"\n---{tok}---")
     res_gold = against_gold(GOLD_PATH, tokenizers[tok])
@@ -341,15 +347,10 @@ if __name__ == "__main__":
     4. least words fert：输入一个tokenizer方法，输出它在训练集中最罕见的10000词上的平均fertility
     """
     print("\n---Agreement---")
-    print("BPE vs WordPiece:")
-    res = pairwise_agreement(agree_corpus, tokenizers["bpe"], tokenizers["wpc"])
-    print(f"F1: {res['f1']:.3f}\nPer word F1: {res['per_word_f1']:.3f}")
-    print("BPE (longest) vs WordPiece:")
-    res = pairwise_agreement(agree_corpus, tokenizers["bpe_long"], tokenizers["wpc"])
-    print(f"F1: {res['f1']:.3f}\nPer word F1: {res['per_word_f1']:.3f}")
-    print("BPE vs morfessor:")
-    res_1 = pairwise_agreement(agree_corpus, tokenizers["bpe"], tokenizers["morfessor"])
-    print(f"F1: {res_1['f1']:.3f}\nPer word F1: {res_1['per_word_f1']:.3f}")
+    compare_run("bpe", "wpc")
+    compare_run("bpe_long", "wpc")
+    compare_run("bpe", "morfessor")
+    compare_run("wpc", "morfessor")
 
     eval_run("morfessor")
     eval_run("bpe")
