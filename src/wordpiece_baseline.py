@@ -50,12 +50,14 @@ def initialize_wordpiece_vocabulary(
 def compute_pair_scores(
     word_type_splits: dict[str, list[str]],
     word_type_freqs: dict[str, int],
+    min_pair_freq: int = 1,
 ) -> dict[tuple[str, str], float]:
     """
     Compute WordPiece scores for all adjacent subword pairs.
     score(pair) = pair_frequency / (frequency_of_first_subword * frequency_of_second_subword)
     This is the baseline implementation: after every merge, frequencies and scores are recomputed over all word types.
     This is expensive for large corpora.
+    If min_pair_freq > 1, pairs with frequency below this threshold are ignored. This helps avoid selecting very rare but high-association pairs.
     """
     subword_type_freqs = defaultdict(int)
     pair_freqs = defaultdict(int)
@@ -72,6 +74,9 @@ def compute_pair_scores(
 
     scores: dict[tuple[str, str], float] = {}
     for pair, pair_frequency in pair_freqs.items():
+        if pair_frequency < min_pair_freq:
+            continue
+
         first_subword, second_subword = pair
         scores[pair] = pair_frequency / (
             subword_type_freqs[first_subword] * subword_type_freqs[second_subword]
@@ -118,12 +123,14 @@ def merge_pair_in_word_type_splits(
 
     return updated_word_type_splits, new_subword_type
 
+DEFAULT_MIN_PAIR_FREQ = 50
 
 def train_wordpiece(
     word_type_freqs: dict[str, int],
     vocab_size: int,
     special_tokens: list[str] | None = None,
     verbose: bool = False,
+    min_pair_freq: int = DEFAULT_MIN_PAIR_FREQ,
 ) -> tuple[set[str], dict[str, list[str]], list[tuple[str, str, str]]]:
     """
     Train a baseline WordPiece vocabulary. This function is the vocabulary learning phase, not the tokenization phase.
@@ -144,7 +151,7 @@ def train_wordpiece(
     merges: list[tuple[str, str, str]] = []
 
     while len(vocabulary) < vocab_size:
-        scores = compute_pair_scores(word_type_splits, word_type_freqs)
+        scores = compute_pair_scores(word_type_splits, word_type_freqs, min_pair_freq=min_pair_freq)
 
         if not scores:
             break
@@ -299,6 +306,7 @@ def time_training(
     word_type_freqs: dict[str, int],
     vocab_size: int,
     special_tokens: list[str] | None = None,
+    min_pair_freq: int = 1,
 ) -> tuple[set[str], dict[str, list[str]], list[tuple[str, str, str]], float]:
     """
     Train WordPiece and return the training time.
@@ -306,7 +314,7 @@ def time_training(
     """
     start_time = time.perf_counter()
     vocabulary, word_type_splits, merges = train_wordpiece(
-        word_type_freqs, vocab_size, special_tokens=special_tokens
+        word_type_freqs, vocab_size, special_tokens=special_tokens, min_pair_freq=min_pair_freq,
     )
     training_time = time.perf_counter() - start_time
     return vocabulary, word_type_splits, merges, training_time
