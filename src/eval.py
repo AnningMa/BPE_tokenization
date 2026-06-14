@@ -1,4 +1,5 @@
 import argparse
+import itertools
 import re
 import time
 from collections import Counter, defaultdict
@@ -102,8 +103,8 @@ def make_vocab(
     counter = Counter()
 
     for e in dataset:
-        text = e["text"].strip()
-        words = re.findall(r"[A-Za-z0-9]+", text)
+        text = e["text"].strip().lower()
+        words = re.findall(r"\b[a-z'-]+\b", text)
         counter.update(words)
 
     if write_output:
@@ -289,6 +290,9 @@ Number of preserved word types (among top 1k): {res_freq["n_preserved(1k)"]};
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--only-eg", action="store_true")
+    parser.add_argument("--test-data", action="store_true")
+    parser.add_argument("--bpe-vocab", type=int, default=5_000)
+    parser.add_argument("--wp-vocab", type=int, default=10_000)
     args = parser.parse_args()
 
     SAVE_VOCAB_PATH = Path(__file__).parent.parent / "data"
@@ -298,20 +302,23 @@ if __name__ == "__main__":
     mo.load("../data/morf_wiki_103.bin")
     vocab = dict(make_vocab())
 
+    if args.test_data:
+        vocab = dict(itertools.islice(vocab.items(), 20_000))
+
+    """
     print("Training naive BPE tokenizer...")
     bpe = NaiveBPE()
     t0 = time.perf_counter()
-    bpe.train(vocab_size=1000, word_freqs=vocab)
+    bpe.train(vocab_size=args.bpe_vocab, word_freqs=vocab)
     t1 = time.perf_counter()
     print(f"Naive BPE trained in {t1 - t0:.2f}s.")
     save_vocab(set(bpe.vocab), str(SAVE_VOCAB_PATH / "bpe-vocab.txt"))
     print(f"BPE vocabulary saved to {str(SAVE_VOCAB_PATH / 'bpe-vocab.txt')}")
 
-    """
     print("\nTraining fast BPE tokenizer...")
     f_bpe = FastBPE()
     t0 = time.perf_counter()
-    f_bpe.train(vocab_size=1000, word_freqs=vocab)
+    f_bpe.train(vocab_size=args.bpe_vocab, word_freqs=vocab)
     t1 = time.perf_counter()
     print(f"Fast BPE trained in {t1 - t0:.2f}s.")
     """
@@ -320,7 +327,7 @@ if __name__ == "__main__":
     t0 = time.perf_counter()
     wp_voc, _, _ = train_wordpiece(
         vocab,
-        1000,
+        args.wp_vocab,
     )
     t1 = time.perf_counter()
     print(f"Word-Piece trained in {t1 - t0:.2f}s")
@@ -328,18 +335,21 @@ if __name__ == "__main__":
     print(f"WordPiece vocabulary saved to: {str(SAVE_VOCAB_PATH / 'wp-vocab.txt')}")
 
     def wpc(word, vocab=wp_voc):
-        return encode_word_type(word, vocab)
+        res = encode_word_type(word, vocab)
+        return [w.replace("##", "") for w in res]
 
-    f_wpc = WordPieceTrieTokenizer(wp_voc)
+    def f_wpc(word, vocab=wp_voc):
+        res = WordPieceTrieTokenizer(vocab).encode_word_type(word)
+        return [w.replace("##", "") for w in res]
 
     tokenizers = {
         "porter": porter_seg.segment,
         "morfessor": mo.segment,
-        "bpe": bpe.tokenize,
-        "bpe_long": bpe.tokenize_longest,
+        # "bpe": bpe.tokenize,
+        # "bpe_long": bpe.tokenize_longest,
         # "fast_bpe": f_bpe.tokenize,
         "wpc": wpc,
-        "fast_wpc": f_wpc.encode_word_type,
+        "fast_wpc": f_wpc,
     }
 
     test_vocab = dict(make_vocab(split="test"))
@@ -365,14 +375,15 @@ if __name__ == "__main__":
 
     if not args.only_eg:
         print("\n---Agreement---")
-        compare_run("bpe", "wpc")
-        compare_run("bpe_long", "wpc")
-        compare_run("bpe", "morfessor")
+        # compare_run("bpe", "wpc")
+        # compare_run("bpe_long", "wpc")
+        # compare_run("bpe", "morfessor")
         compare_run("wpc", "morfessor")
 
+        eval_run("porter")
         eval_run("morfessor")
-        eval_run("bpe")
-        eval_run("bpe_long")
+        # eval_run("bpe")
+        # eval_run("bpe_long")
         eval_run("wpc")
         # eval_run("fast_bpe")
         eval_run("fast_wpc")

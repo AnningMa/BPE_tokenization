@@ -19,3 +19,4 @@ pandas = ">=3.0.3,<4"
 [pypi-dependencies]
 morphemes = ">=1.2.0, <2"
 lemminflect = ">=0.2.3, <0.3"
+base = ">=0.0.0, <0.0.1"
