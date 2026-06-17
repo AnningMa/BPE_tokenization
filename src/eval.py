@@ -18,6 +18,23 @@ from porter_segmenter_nltk import PorterSegmenter
 from wordpiece_baseline import encode_word_type, save_vocab, train_wordpiece
 from wordpiece_fast_tokenization import WordPieceTrieTokenizer
 
+"""
+three metrics
+
+1. BPE-WordPiece agreement:
+    - boundary F1 on corpus
+    - average boundary F1 per word.
+
+2. Against gold standard:
+    - precision, recall, F1
+    - average fertility (nb. of subwords per word token)
+
+3. On freq/rare words:
+    - nb. of untouched freq words
+    - avg fertility (on both freq and rare words)
+"""
+
+
 GOLD_PATH = Path(__file__).parent.parent / "data" / "goldstd_combined.segmentation.eng"
 # "../data/goldstd_combined.segmentation.eng"
 FREQ_WORDS_PATH = Path(__file__).parent.parent / "data" / "google-10000-english.txt"
@@ -101,11 +118,11 @@ def make_vocab(
         if _test_vocab_cache is not None:
             return _test_vocab_cache
 
-    dataset = load_dataset(base_name, dataset_id, split=split)
+    dataset = load_dataset(base_name, dataset_id, split=split, streaming=True)
     counter = Counter()
 
-    for e in dataset:
-        text = e["text"].strip().lower()
+    for _ in range(2_000_000):
+        text = list(dataset.take(1)["text"])[0].strip().lower()
         words = re.findall(r"\b[a-z'-]+\b", text)
         counter.update(words)
 
@@ -357,22 +374,6 @@ if __name__ == "__main__":
 
     test_vocab = dict(make_vocab(split="test"))
     agree_corpus = test_vocab.keys()
-
-    """
-    4 个指标：
-
-    1. pairwise agreement：输入1个测试集（单词表，我这里暂时用了wiki103的test split，可以换），
-    2个tokenizer方法，输出2个方法的整个测试集上boundary位置的kappa和f1；
-
-    2. against gold：输入gold测试集+1个tokenizer方法，输出和gold对比的kappa，precision，recall，f1，
-    gold的每词平均子词（subword）数，tokenizer预测的每词平均子词数；
-
-    3. freq words metrics：对于英语中前10000频繁的词（来源：https://github.com/first20hours/google-10000-english）
-    输入词表路径和1个tokenizer方法，输出这个tokenizer在前10000/1000词中保留（即没做任何切分）的数量和比例，
-    也输出前10000词平均fertility（一个词分出来几个子词）
-
-    4. least words fert：输入一个tokenizer方法，输出它在训练集中最罕见的10000词上的平均fertility
-    """
 
     ONLY_EXAMPLES = False
 
