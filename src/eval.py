@@ -1,5 +1,6 @@
 import argparse
 import itertools
+import json
 import re
 import time
 from collections import Counter, defaultdict
@@ -10,7 +11,7 @@ import numpy as np
 from datasets import load_dataset
 from sklearn.metrics import cohen_kappa_score
 
-# from bpe_fast import FastBPE
+from bpe_fast import FastBPE
 from bpe_naive import NaiveBPE
 from morfessor_segmenter import MorfessorModel
 from porter_segmenter_nltk import PorterSegmenter
@@ -21,6 +22,7 @@ GOLD_PATH = Path(__file__).parent.parent / "data" / "goldstd_combined.segmentati
 # "../data/goldstd_combined.segmentation.eng"
 FREQ_WORDS_PATH = Path(__file__).parent.parent / "data" / "google-10000-english.txt"
 # "../data/google-10000-english.txt"
+LOG_PATH = Path(__file__).parent.parent / "log"
 
 
 def seg_to_vec(pieces: list[str], word_len: int) -> list[int]:
@@ -261,6 +263,9 @@ def compare_run(tok_a: str, tok_b: str):
     print(f"\n---{tok_a} vs {tok_b}---")
     res = pairwise_agreement(agree_corpus, tokenizers[tok_a], tokenizers[tok_b])
     print(f"F1: {res['f1']:.3f}\nAverage per word F1: {res['per_word_f1']:.3f}")
+    with open(LOG_PATH / "agreement-log.jsonl") as f:
+        json.dumps({"pair": f"{tok_a}-{tok_b}", "result": res}, file=f)
+    print(f"Log written to: {LOG_PATH / 'agreement-log.jsonl'}")
 
 
 def eval_run(tok: str):
@@ -305,7 +310,6 @@ if __name__ == "__main__":
     if args.test_data:
         vocab = dict(itertools.islice(vocab.items(), 20_000))
 
-    """
     print("Training naive BPE tokenizer...")
     bpe = NaiveBPE()
     t0 = time.perf_counter()
@@ -321,7 +325,6 @@ if __name__ == "__main__":
     f_bpe.train(vocab_size=args.bpe_vocab, word_freqs=vocab)
     t1 = time.perf_counter()
     print(f"Fast BPE trained in {t1 - t0:.2f}s.")
-    """
 
     print("\nTraining Word-Piece tokenizer...")
     t0 = time.perf_counter()
@@ -345,9 +348,9 @@ if __name__ == "__main__":
     tokenizers = {
         "porter": porter_seg.segment,
         "morfessor": mo.segment,
-        # "bpe": bpe.tokenize,
-        # "bpe_long": bpe.tokenize_longest,
-        # "fast_bpe": f_bpe.tokenize,
+        "bpe": bpe.tokenize,
+        "bpe_long": bpe.tokenize_longest,
+        "fast_bpe": f_bpe.tokenize,
         "wpc": wpc,
         "fast_wpc": f_wpc,
     }
@@ -375,18 +378,13 @@ if __name__ == "__main__":
 
     if not args.only_eg:
         print("\n---Agreement---")
-        # compare_run("bpe", "wpc")
-        # compare_run("bpe_long", "wpc")
-        # compare_run("bpe", "morfessor")
+        compare_run("bpe", "wpc")
+        compare_run("bpe_long", "wpc")
+        compare_run("bpe", "morfessor")
         compare_run("wpc", "morfessor")
 
-        eval_run("porter")
-        eval_run("morfessor")
-        # eval_run("bpe")
-        # eval_run("bpe_long")
-        eval_run("wpc")
-        # eval_run("fast_bpe")
-        eval_run("fast_wpc")
+        for t in tokenizers.keys():
+            eval_run(t)
 
     print("\n---Examples---")
     words = ["unbelievable", "tokenization", "preprocessing", "cats", "the"]
