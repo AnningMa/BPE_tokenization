@@ -31,10 +31,11 @@ Merge = tuple[str, str, str]
 
 SPECIAL_TOKENS = ["[UNK]"]
 CONTINUATION_PREFIX = "##"
+DEFAULT_MIN_PAIR_FREQ = 100
 
 
 def split_word_type_into_initial_subwords(word_type: str) -> list[str]:
-    
+    """Split a word type into initial WordPiece character-level subwords."""
     if not word_type:
         return []
     return [word_type[0]] + [CONTINUATION_PREFIX + char for char in word_type[1:]]
@@ -57,10 +58,17 @@ def pair_score(
     pair: Pair,
     pair_freqs: dict[Pair, int],
     subword_type_freqs: dict[str, int],
+    min_pair_freq: int = DEFAULT_MIN_PAIR_FREQ,
 ) -> float:
-    """Compute the current WordPiece score for one adjacent pair."""
+    """
+    Compute the current WordPiece score for one adjacent pair.
+    score(pair) = pair_frequency / (frequency(first) * frequency(second))
+    Pairs below min_pair_freq are ignored. This keeps the fast vocabulary
+    learner aligned with the final baseline setting and reduces rare-string
+    merges.
+    """
     pair_frequency = pair_freqs.get(pair, 0)
-    if pair_frequency <= 0:
+    if pair_frequency < min_pair_freq:
         return 0.0
 
     first_subword, second_subword = pair
@@ -75,6 +83,7 @@ def pair_score(
 def initialize_training_state(
     word_type_freqs: dict[str, int],
     special_tokens: list[str] | None = None,
+    min_pair_freq: int = DEFAULT_MIN_PAIR_FREQ,
 ) -> tuple[
     set[str],
     dict[str, list[str]],
@@ -83,9 +92,7 @@ def initialize_training_state(
     defaultdict[Pair, set[str]],
     list[tuple[float, Pair]],
 ]:
-    """
-    Initialize vocabulary, word-type splits, frequency tables, indexes, and heap.
-    """
+    """Initialize vocabulary, word-type splits, frequency tables, indexes, and heap."""
     if special_tokens is None:
         special_tokens = SPECIAL_TOKENS
 
@@ -97,6 +104,9 @@ def initialize_training_state(
 
     for word_type, word_frequency in word_type_freqs.items():
         split = split_word_type_into_initial_subwords(word_type)
+        if not split:
+            continue
+
         word_type_splits[word_type] = split
         vocabulary.update(split)
 
@@ -109,7 +119,12 @@ def initialize_training_state(
 
     heap: list[tuple[float, Pair]] = []
     for pair in pair_freqs:
-        score = pair_score(pair, pair_freqs, subword_type_freqs)
+        score = pair_score(
+            pair,
+            pair_freqs,
+            subword_type_freqs,
+            min_pair_freq=min_pair_freq,
+        )
         if score > 0:
             heapq.heappush(heap, (-score, pair))
 
@@ -143,9 +158,10 @@ def subtract_word_type_statistics(
         pair_freqs[pair] -= word_frequency
         if pair_freqs[pair] <= 0:
             del pair_freqs[pair]
-        pair_to_word_types[pair].discard(word_type)
-        if not pair_to_word_types[pair]:
-            del pair_to_word_types[pair]
+        if pair in pair_to_word_types:
+            pair_to_word_types[pair].discard(word_type)
+            if not pair_to_word_types[pair]:
+                del pair_to_word_types[pair]
 
     return changed_pairs
 
@@ -171,14 +187,22 @@ def add_word_type_statistics(
     return changed_pairs
 
 
-def merge_pair_in_split(split: Sequence[str], pair_to_merge: Pair, new_subword_type: str) -> List[str]:
+def merge_pair_in_split(
+    split: Sequence[str],
+    pair_to_merge: Pair,
+    new_subword_type: str,
+) -> list[str]:
     """Merge all non-overlapping occurrences of a pair inside one word-type split."""
     first_subword, second_subword = pair_to_merge
     updated_split: list[str] = []
     i = 0
 
     while i < len(split):
-        if i < len(split) - 1 and split[i] == first_subword and split[i + 1] == second_subword:
+        if (
+            i < len(split) - 1
+            and split[i] == first_subword
+            and split[i + 1] == second_subword
+        ):
             updated_split.append(new_subword_type)
             i += 2
         else:
@@ -193,9 +217,15 @@ def push_current_score(
     heap: list[tuple[float, Pair]],
     pair_freqs: dict[Pair, int],
     subword_type_freqs: dict[str, int],
+    min_pair_freq: int = DEFAULT_MIN_PAIR_FREQ,
 ) -> None:
     """Push a pair's current score to the heap if the pair is still active."""
-    score = pair_score(pair, pair_freqs, subword_type_freqs)
+    score = pair_score(
+        pair,
+        pair_freqs,
+        subword_type_freqs,
+        min_pair_freq=min_pair_freq,
+    )
     if score > 0:
         heapq.heappush(heap, (-score, pair))
 
@@ -204,6 +234,7 @@ def pop_best_current_pair(
     heap: list[tuple[float, Pair]],
     pair_freqs: dict[Pair, int],
     subword_type_freqs: dict[str, int],
+    min_pair_freq: int = DEFAULT_MIN_PAIR_FREQ,
     tolerance: float = 1e-15,
 ) -> Pair | None:
     """
@@ -217,7 +248,12 @@ def pop_best_current_pair(
     while heap:
         stored_negative_score, pair = heapq.heappop(heap)
         stored_score = -stored_negative_score
-        current_score = pair_score(pair, pair_freqs, subword_type_freqs)
+        current_score = pair_score(
+            pair,
+            pair_freqs,
+            subword_type_freqs,
+            min_pair_freq=min_pair_freq,
+        )
 
         if current_score <= 0:
             continue
@@ -235,14 +271,15 @@ def train_wordpiece_fast_local_updates(
     vocab_size: int,
     special_tokens: list[str] | None = None,
     verbose: bool = False,
+    min_pair_freq: int = DEFAULT_MIN_PAIR_FREQ,
 ) -> tuple[set[str], dict[str, list[str]], list[Merge]]:
     """
     Train WordPiece vocabulary with experimental local updates.
 
-    This aims to reduce repeated full-corpus recomputation. It should produce the
-    same kind of vocabulary as baseline WordPiece training, but the exact merge
-    order can differ if there are score ties, because heaps do not guarantee the
-    same tie-breaking as a dictionary max scan.
+    This version uses the same WordPiece score and min_pair_freq threshold as the
+    baseline. It aims to reduce repeated full-corpus recomputation, but the exact
+    merge order can still differ because of heap tie-breaking and lazy/local
+    updates.
     """
     (
         vocabulary,
@@ -251,12 +288,21 @@ def train_wordpiece_fast_local_updates(
         pair_freqs,
         pair_to_word_types,
         heap,
-    ) = initialize_training_state(word_type_freqs, special_tokens)
+    ) = initialize_training_state(
+        word_type_freqs,
+        special_tokens,
+        min_pair_freq=min_pair_freq,
+    )
 
     merges: list[Merge] = []
 
     while len(vocabulary) < vocab_size:
-        best_pair = pop_best_current_pair(heap, pair_freqs, subword_type_freqs)
+        best_pair = pop_best_current_pair(
+            heap,
+            pair_freqs,
+            subword_type_freqs,
+            min_pair_freq=min_pair_freq,
+        )
         if best_pair is None:
             break
 
@@ -309,18 +355,28 @@ def train_wordpiece_fast_local_updates(
         merges.append((first_subword, second_subword, new_subword_type))
 
         # Scores for changed pairs must be pushed. Scores for other pairs can also
-        # be affected if they contain subwords whose frequencies changed. The lazy
-        # validation in pop_best_current_pair handles stale heap entries, and the
-        # directly changed pairs are the most important ones to refresh promptly.
+        # be affected if they contain subwords whose frequencies changed. Lazy
+        # validation handles stale entries; refreshing changed pairs keeps the heap
+        # useful without recomputing all scores from scratch.
         for pair in changed_pairs:
-            push_current_score(pair, heap, pair_freqs, subword_type_freqs)
+            push_current_score(
+                pair,
+                heap,
+                pair_freqs,
+                subword_type_freqs,
+                min_pair_freq=min_pair_freq,
+            )
 
-        # Also refresh currently active pairs that contain the newly created subword.
-        # This is small compared with scanning all word types and helps the heap
-        # find newly possible high-scoring pairs sooner.
+        # Also refresh currently active pairs that contain the new subword.
         for pair in list(pair_freqs.keys()):
             if new_subword_type in pair:
-                push_current_score(pair, heap, pair_freqs, subword_type_freqs)
+                push_current_score(
+                    pair,
+                    heap,
+                    pair_freqs,
+                    subword_type_freqs,
+                    min_pair_freq=min_pair_freq,
+                )
 
         if verbose:
             print(
@@ -335,11 +391,15 @@ def time_fast_training(
     word_type_freqs: dict[str, int],
     vocab_size: int,
     special_tokens: list[str] | None = None,
+    min_pair_freq: int = DEFAULT_MIN_PAIR_FREQ,
 ) -> tuple[set[str], dict[str, list[str]], list[Merge], float]:
     """Train with local updates and return the elapsed time."""
     start_time = time.perf_counter()
     vocabulary, word_type_splits, merges = train_wordpiece_fast_local_updates(
-        word_type_freqs, vocab_size, special_tokens=special_tokens
+        word_type_freqs,
+        vocab_size,
+        special_tokens=special_tokens,
+        min_pair_freq=min_pair_freq,
     )
     elapsed = time.perf_counter() - start_time
     return vocabulary, word_type_splits, merges, elapsed
@@ -350,6 +410,7 @@ def time_fast_training(
 def compute_pair_scores_baseline(
     word_type_splits: dict[str, list[str]],
     word_type_freqs: dict[str, int],
+    min_pair_freq: int = DEFAULT_MIN_PAIR_FREQ,
 ) -> dict[Pair, float]:
     """Baseline full recomputation of WordPiece pair scores."""
     subword_type_freqs: defaultdict[str, int] = defaultdict(int)
@@ -362,10 +423,14 @@ def compute_pair_scores_baseline(
         for pair in iter_adjacent_pairs(split):
             pair_freqs[pair] += word_frequency
 
-    return {
-        pair: freq / (subword_type_freqs[pair[0]] * subword_type_freqs[pair[1]])
-        for pair, freq in pair_freqs.items()
-    }
+    scores: dict[Pair, float] = {}
+    for pair, freq in pair_freqs.items():
+        if freq < min_pair_freq:
+            continue
+        first, second = pair
+        scores[pair] = freq / (subword_type_freqs[first] * subword_type_freqs[second])
+
+    return scores
 
 
 def merge_pair_in_all_word_type_splits(
@@ -384,18 +449,28 @@ def train_wordpiece_baseline_for_comparison(
     word_type_freqs: dict[str, int],
     vocab_size: int,
     special_tokens: list[str] | None = None,
+    min_pair_freq: int = DEFAULT_MIN_PAIR_FREQ,
 ) -> tuple[set[str], dict[str, list[str]], list[Merge]]:
     """Simple baseline WordPiece training for timing comparison."""
-    vocabulary, word_type_splits, *_ = initialize_training_state(word_type_freqs, special_tokens)
+    vocabulary, word_type_splits, *_ = initialize_training_state(
+        word_type_freqs,
+        special_tokens,
+        min_pair_freq=min_pair_freq,
+    )
     merges: list[Merge] = []
 
     while len(vocabulary) < vocab_size:
-        scores = compute_pair_scores_baseline(word_type_splits, word_type_freqs)
+        scores = compute_pair_scores_baseline(
+            word_type_splits,
+            word_type_freqs,
+            min_pair_freq=min_pair_freq,
+        )
         if not scores:
             break
         best_pair = max(scores, key=scores.get)
         word_type_splits, new_subword_type = merge_pair_in_all_word_type_splits(
-            best_pair, word_type_splits
+            best_pair,
+            word_type_splits,
         )
         if new_subword_type in vocabulary:
             break
@@ -408,21 +483,33 @@ def train_wordpiece_baseline_for_comparison(
 def time_baseline_and_fast_training(
     word_type_freqs: dict[str, int],
     vocab_size: int,
+    min_pair_freq: int = DEFAULT_MIN_PAIR_FREQ,
 ) -> dict[str, object]:
-    """Compare baseline full-recomputation training and local-update training."""
+    """
+    Compare baseline full-recomputation training and local-update training.
+
+    Both versions use the same vocab_size and min_pair_freq. This makes the
+    comparison fairer, but the fast version can still learn a different merge
+    sequence or vocabulary, so treat this as experimental.
+    """
     start = time.perf_counter()
     baseline_vocab, _, baseline_merges = train_wordpiece_baseline_for_comparison(
-        word_type_freqs, vocab_size
+        word_type_freqs,
+        vocab_size,
+        min_pair_freq=min_pair_freq,
     )
     baseline_time = time.perf_counter() - start
 
     start = time.perf_counter()
     fast_vocab, _, fast_merges = train_wordpiece_fast_local_updates(
-        word_type_freqs, vocab_size
+        word_type_freqs,
+        vocab_size,
+        min_pair_freq=min_pair_freq,
     )
     fast_time = time.perf_counter() - start
 
     return {
+        "min_pair_freq": min_pair_freq,
         "baseline_training_time_seconds": baseline_time,
         "fast_training_time_seconds": fast_time,
         "speedup": baseline_time / fast_time if fast_time > 0 else None,
