@@ -1,9 +1,10 @@
 import argparse
-import itertools
 import json
+import os
 import re
 import time
 from collections import Counter, defaultdict
+from itertools import islice
 from pathlib import Path
 from typing import Dict, List
 
@@ -40,6 +41,61 @@ GOLD_PATH = Path(__file__).parent.parent / "data" / "goldstd_combined.segmentati
 FREQ_WORDS_PATH = Path(__file__).parent.parent / "data" / "google-10000-english.txt"
 # "../data/google-10000-english.txt"
 LOG_PATH = Path(__file__).parent.parent / "log"
+
+DEFAULT_VOCAB_DIR = Path(__file__).parent.parent / "data"
+
+
+class Tokenizer:
+    def __init__(
+        self,
+        type: str,
+        data_id: str | None = None,
+        vocab_size: int | None = None,
+        min_pair_freq: int | None = None,
+        is_long: bool = False,
+    ):
+        self.type = type
+        self.vocab_size = vocab_size
+        self.min_pair_freq = min_pair_freq
+        self.data_id = data_id
+
+        if type == "bpe":
+            vocab_path = DEFAULT_VOCAB_DIR / f"{data_id}_v{vocab_size}_vocab.txt"
+            merges_path = DEFAULT_VOCAB_DIR / f"{data_id}_v{vocab_size}_merges.txt"
+            bpe = FastBPE()
+            bpe.load_vocab(vocab_path, merges_path)
+            if not is_long:
+                self.tokenizer = bpe.tokenize
+            else:
+                self.tokenizer = bpe.tokenize_longest
+
+        if type == "wpc":
+            wp_voc = load_wp_vocab(
+                DEFAULT_VOCAB_DIR
+                / f"{data_id}_v{vocab_size}_m{min_pair_freq}_vocab.txt"
+            )
+
+            def _wpc(word, vocab=wp_voc):
+                res = encode_word_type(word, vocab)
+                return [w.replace("##", "") for w in res]
+
+            self.tokenizer = _wpc
+
+        if type == "f_wpc":
+            wp_voc = load_wp_vocab(
+                DEFAULT_VOCAB_DIR
+                / f"{data_id}_v{vocab_size}_m{min_pair_freq}_vocab.txt"
+            )
+
+            def _f_wpc(word, vocab=wp_voc):
+                res = WordPieceTrieTokenizer(vocab).encode_word_type(word)
+                return [w.replace("##", "") for w in res]
+
+            self.tokenizer = _f_wpc
+
+        if type == "morf":
+            mo = MorfessorModel().load("../data/morf_wiki_103.bin")
+            self.tokenizer = mo.segment
 
 
 def seg_to_vec(pieces: list[str], word_len: int) -> list[int]:
@@ -118,11 +174,11 @@ def make_vocab(
         if _test_vocab_cache is not None:
             return _test_vocab_cache
 
-    dataset = load_dataset(base_name, dataset_id, split=split, streaming=True)
+    dataset = load_dataset(base_name, dataset_id, split=split)
     counter = Counter()
 
-    for _ in range(2_000_000):
-        text = list(dataset.take(1)["text"])[0].strip().lower()
+    for e in dataset:
+        text = e["text"].strip().lower()
         words = re.findall(r"\b[a-z'-]+\b", text)
         counter.update(words)
 
@@ -257,10 +313,8 @@ def freq_words_metrics(path, tokenize) -> Dict:
 
     return {
         "avg_fertility": avg_fertility,
+        "n_preserved(0k)": n_pres_1k,
         "n_preserved(10k)": n_pres_10k,
-        # "proportion(10k)": prop_10k,
-        "n_preserved(1k)": n_pres_1k,
-        # "proportion(1k)": prop_1k,
     }
 
 
@@ -276,57 +330,150 @@ def least_words_fert(tokenize) -> float:
     return avg_fert
 
 
-def compare_run(tok_a: str, tok_b: str):
-    print(f"\n---{tok_a} vs {tok_b}---")
-    res = pairwise_agreement(agree_corpus, tokenizers[tok_a], tokenizers[tok_b])
-    print(f"F1: {res['f1']:.3f}\nAverage per word F1: {res['per_word_f1']:.3f}")
-    with open(LOG_PATH / "agreement-log.jsonl") as f:
-        json.dumps({"pair": f"{tok_a}-{tok_b}", "result": res}, file=f)
+def avg_fert_over_wt(tokenize, text):
+    n_sw = []
+    wt = re.split(r"\W+", text)
+    for w in wt:
+        n_sw.append(len(tokenize(w)))
+
+    return sum(n_sw) / len(wt)
+
+
+def in_out_domain(tokenize, domain):
+    gtn = load_dataset("manu/project_gutenberg", split="en", streaming=True)
+    text_gtn = next(iter(gtn.skip(1_000_000)))["text"]
+    while len(text_gtn.split()) <= 100:
+        text_gtn = next(iter(gtn))["text"]
+
+    wk = load_dataset(
+        "Salesforce/wikitext", "wikitext-103-v1", split="test", streaming=True
+    )
+    text_wk = next(iter(wk.skip(10)))["text"]
+    while len(text_wk.split()) <= 100:
+        text_gtn = next(iter(wk))["text"]
+
+    if domain == "wiki":
+        in_domain_fert = avg_fert_over_wt(tokenize, text_wk)
+        out_domain_fert = avg_fert_over_wt(tokenize, text_gtn)
+    elif domain == "guten":
+        in_domain_fert = avg_fert_over_wt(tokenize, text_gtn)
+        out_domain_fert = avg_fert_over_wt(tokenize, text_wk)
+    else:
+        raise ValueError(f"Unkown doamin: {domain}")
+
+    return {"in_domain": in_domain_fert, "out_domain": out_domain_fert}
+
+
+def load_wp_vocab(path):
+    wp_voc = set()
+    with open(path, "r") as f:
+        for w in f:
+            wp_voc.add(w.strip())
+    return wp_voc
+
+
+def wpc(word, vocab):
+    res = encode_word_type(word, vocab)
+    return [w.replace("##", "") for w in res]
+
+
+def f_wpc(word, vocab):
+    res = WordPieceTrieTokenizer(vocab).encode_word_type(word)
+    return [w.replace("##", "") for w in res]
+
+
+def compare_run(tok_a: Tokenizer, tok_b: Tokenizer):
+    print(f"\n---{tok_a.type} vs {tok_b.type}---")
+    res = pairwise_agreement(agree_corpus, tok_a.tokenizer, tok_b.tokenizer)
+    params_a = {
+        "type": tok_a.type,
+        "train_data": tok_a.data_id,
+        "vocab_size": tok_a.vocab_size,
+        "min_pair_freq": tok_a.min_pair_freq,
+    }
+    params_b = {
+        "type": tok_b.type,
+        "train_data": tok_b.data_id,
+        "vocab_size": tok_b.vocab_size,
+        "min_pair_freq": tok_b.min_pair_freq,
+    }
+    with open(LOG_PATH / "agreement-log.jsonl", "a") as f:
+        json.dump({"a": params_a, "b": params_b, "result": res}, f)
+        f.write("\n")
     print(f"Log written to: {LOG_PATH / 'agreement-log.jsonl'}")
 
 
-def eval_run(tok: str):
-    print(f"\n---{tok}---")
-    res_gold = against_gold(GOLD_PATH, tokenizers[tok])
-    res_freq = freq_words_metrics(FREQ_WORDS_PATH, tokenizers[tok])
-    res_rare = least_words_fert(tokenizers[tok])
-    print("Against gold set:")
-    print(f"""Precision: {res_gold["precision"]:.3f};
-Recall: {res_gold["recall"]:.3f};
-F1 score:  {res_gold["f1"]:.3f};
-Average F1 per word: {res_gold["per_word_f1"]:.3f};
-Average number of subwords per word (gold set): {res_gold["avg_spw_gold"]:.3f};
-Average number of subwords per word (tokenizer): {res_gold["avg_spw_pred"]:.3f};
-""")
-    print("On frequent words:")
-    print(f"""Average fertility: {res_freq["avg_fertility"]:.3f};
-Number of preserved word types (among top 10k): {res_freq["n_preserved(10k)"]};
-Number of preserved word types (among top 1k): {res_freq["n_preserved(1k)"]};
-""")
-    print("On rare words:")
-    print(
-        f"Average fertility (among the most rare 1k of the training corpus): {res_rare:.3f}"
-    )
+def eval_run(tok: Tokenizer):
+    print(f"Evaluating {tok.type} ...")
+    res_gold = against_gold(GOLD_PATH, tok.tokenizer)
+    res_freq = freq_words_metrics(FREQ_WORDS_PATH, tok.tokenizer)
+    res_rare = least_words_fert(tok.tokenizer)
+    res_domain = None
+    if not tok.type == "morf":
+        res_domain = in_out_domain(tok.tokenizer, tok.data_id)
+
+    with open(LOG_PATH / "tokenize-log.jsonl", "a") as f:
+        json.dump(
+            {
+                "type": tok.type,
+                "train_data": tok.data_id,
+                "vocab_size": tok.vocab_size,
+                "min_pair_freq": tok.min_pair_freq,
+                "against_gold": res_gold,
+                "on_freq_words": res_freq,
+                "on_rare_words": res_rare,
+                "avg_fert_per_wt": res_domain,
+            },
+            f,
+        )
+        f.write("\n")
+    print(f"log written to: {LOG_PATH / 'tokenize-log.jsonl'}")
 
 
 if __name__ == "__main__":
+    tokenizers = {
+        "morfessor": Tokenizer("morf"),
+        "bpe_wiki_10000": Tokenizer("bpe", "wiki", 10_000),
+        "bpe_wiki_10000_long": Tokenizer("bpe", "wiki", 10_000, is_long=True),
+        "wpc_wiki_5000_500": Tokenizer("wpc", "wiki", 5_000, 500),
+    }
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--only-eg", action="store_true")
+    parser.add_argument("--which", "-w", choices=["compare", "eval"], required=True)
+    parser.add_argument("--tok-a", "-a", choices=tokenizers.keys(), required=True)
+    parser.add_argument("--tok-b", "-b", choices=tokenizers.keys())
+    parser.add_argument("--eg", action="store_true")
     parser.add_argument("--test-data", action="store_true")
-    parser.add_argument("--bpe-vocab", type=int, default=5_000)
-    parser.add_argument("--wp-vocab", type=int, default=10_000)
     args = parser.parse_args()
 
-    SAVE_VOCAB_PATH = Path(__file__).parent.parent / "data"
+    os.makedirs(DEFAULT_VOCAB_DIR, exist_ok=True)
 
-    porter_seg = PorterSegmenter()
-    mo = MorfessorModel()
-    mo.load("../data/morf_wiki_103.bin")
+    # test_vocab = dict(make_vocab(split="test"))
+    agree_corpus = get_gold(GOLD_PATH).keys()
+    tok_a = tokenizers[args.tok_a]
+
+    if args.which == "compare":
+        if args.tok_b:
+            tok_b = tokenizers[args.tok_b]
+            compare_run(tok_a, tok_b)
+        else:
+            raise Exception("Two tokenizers needed")
+    else:
+        eval_run(tok_a)
+
+    if args.eg:
+        print(f"\n---Examples with {args.tok_a}")
+        words = ["unbelievable", "tokenization", "preprocessing", "cats", "the"]
+        for w in words:
+            print(f"{w} -> {tok_a.tokenizer(w)}")
+
+
+"""
+SAVE_VOCAB_PATH = Path(__file__).parent.parent / "data"
+if args.train:
     vocab = dict(make_vocab())
-
     if args.test_data:
         vocab = dict(itertools.islice(vocab.items(), 20_000))
-
     print("Training naive BPE tokenizer...")
     bpe = NaiveBPE()
     t0 = time.perf_counter()
@@ -353,43 +500,4 @@ if __name__ == "__main__":
     print(f"Word-Piece trained in {t1 - t0:.2f}s")
     save_vocab(wp_voc, str(SAVE_VOCAB_PATH / "wp-vocab.txt"))
     print(f"WordPiece vocabulary saved to: {str(SAVE_VOCAB_PATH / 'wp-vocab.txt')}")
-
-    def wpc(word, vocab=wp_voc):
-        res = encode_word_type(word, vocab)
-        return [w.replace("##", "") for w in res]
-
-    def f_wpc(word, vocab=wp_voc):
-        res = WordPieceTrieTokenizer(vocab).encode_word_type(word)
-        return [w.replace("##", "") for w in res]
-
-    tokenizers = {
-        "porter": porter_seg.segment,
-        "morfessor": mo.segment,
-        "bpe": bpe.tokenize,
-        "bpe_long": bpe.tokenize_longest,
-        "fast_bpe": f_bpe.tokenize,
-        "wpc": wpc,
-        "fast_wpc": f_wpc,
-    }
-
-    test_vocab = dict(make_vocab(split="test"))
-    agree_corpus = test_vocab.keys()
-
-    ONLY_EXAMPLES = False
-
-    if not args.only_eg:
-        print("\n---Agreement---")
-        compare_run("bpe", "wpc")
-        compare_run("bpe_long", "wpc")
-        compare_run("bpe", "morfessor")
-        compare_run("wpc", "morfessor")
-
-        for t in tokenizers.keys():
-            eval_run(t)
-
-    print("\n---Examples---")
-    words = ["unbelievable", "tokenization", "preprocessing", "cats", "the"]
-    for tok in tokenizers.keys():
-        print(tok)
-        for w in words:
-            print(f"{w} -> {tokenizers[tok](w)}")
+"""
