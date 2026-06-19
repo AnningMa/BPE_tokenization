@@ -45,7 +45,7 @@ class FastBPE(BaseTokenizer):
 
         self._word_freqs = word_freqs
         alphabet = sorted({ch for word in word_freqs for ch in word})
-        self.vocab  = ["<unk>"] + alphabet
+        self.vocab  = ["<unk>", "_"] + alphabet
         self.merges = {}
 
         if vocab_size <= len(self.vocab):
@@ -74,7 +74,7 @@ class FastBPE(BaseTokenizer):
 
         vocab_set = set(self.vocab)
         splits: list[list[str]] = [
-            [ch if ch in vocab_set else "<unk>" for ch in word]
+            [ch if ch in vocab_set else "<unk>" for ch in word] + ["_"]
             for word in pre_tokenize(text)
         ]
 
@@ -102,11 +102,12 @@ class FastBPE(BaseTokenizer):
         tokens: list[str] = []
 
         for word in pre_tokenize(text):
+            word_with_end = word + "_"
             i = 0
-            while i < len(word):
+            while i < len(word_with_end):
                 matched: str | None = None
-                for j in range(len(word), i, -1):
-                    sub = word[i:j]
+                for j in range(len(word_with_end), i, -1):
+                    sub = word_with_end[i:j]
                     if sub in vocab:
                         matched = sub
                         break
@@ -121,7 +122,7 @@ class FastBPE(BaseTokenizer):
         return tokens
 
     def _init_splits(self) -> None:
-        self._splits = {w: list(w) for w in self._word_freqs}
+        self._splits = {w: list(w) + ["_"] for w in self._word_freqs}
 
     def _build_index(self) -> None:
         """One-time O(N) scan to build pair frequencies + inverted index + heap."""

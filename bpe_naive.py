@@ -6,40 +6,47 @@ from collections import defaultdict
 from base import BaseTokenizer
 from utils import pre_tokenize, get_word_type_frequencies
 
-def _compute_pair_freqs(splits, word_freqs):
-    pair_freqs = defaultdict(int)
-    for word, freq in word_freqs.items():
-        split = splits[word]
-        for i in range(len(split) - 1):
-            pair_freqs[(split[i], split[i + 1])] += freq
-    return pair_freqs
+def _merge_split(split: list[str], a: str, b: str, merged: str) -> list[str]:
+    """Apply a single (a, b) -> merged operation to one split list."""
+    i = 0
+    new_split: list[str] = []
+    while i < len(split):
+        if i < len(split) - 1 and split[i] == a and split[i + 1] == b:
+            new_split.append(merged)
+            i += 2
+        else:
+            new_split.append(split[i])
+            i += 1
+    return new_split
 
-def _merge_pair(a, b, splits):
+
+def _merge_pair(a: str, b: str, splits: dict[str, list[str]]) -> None:  # O(W·L)
+    """Apply a single (a, b) -> merged operation to all splits in place."""
     merged = a + b
     for word, split in splits.items():
-        i = 0
-        new_split = []
-        while i < len(split):
-            if i < len(split) - 1 and split[i] == a and split[i + 1] == b:
-                new_split.append(merged)
-                i += 2
-            else:
-                new_split.append(split[i])
-                i += 1
-        splits[word] = new_split
+        splits[word] = _merge_split(split, a, b, merged)
+
 
 class NaiveBPE(BaseTokenizer):
 
-    def __init__(self) -> None:
+    def __init__(self):
         self.vocab:       list[str] = []
         self.merges:      list[tuple[str, str, str]] = []
         self._word_freqs: dict[str, int] = {}
         self._splits:     dict[str, list[str]] = {}
 
-    def _init_splits(self) -> None:
-        self._splits = {w: list(w) for w in self._word_freqs}
+    def _init_splits(self):
+        self._splits = {w: list(w) for w in self._word_freqs} #O(W·L) where W is the number of unique words and L is the average word length
 
-    def train(self, vocab_size, *, corpus=None, word_freqs=None):
+    def _compute_pair_freqs(self) :
+        pair_freqs = defaultdict(int)
+        for word, freq in self._word_freqs.items(): 
+            split = self._splits[word]
+            for i in range(len(split) - 1): #O(W·L) where W is the number of unique words and L is the average word length
+                pair_freqs[(split[i], split[i + 1])] += freq
+        return pair_freqs
+
+    def train(self, vocab_size, *, corpus=None, word_freqs=None): 
         if word_freqs is None:
             if corpus is None:
                 raise ValueError("Provide either `corpus` or `word_freqs`.")
@@ -55,12 +62,12 @@ class NaiveBPE(BaseTokenizer):
 
         self._init_splits()
 
-        while len(self.vocab) < vocab_size:
-            pair_freqs = _compute_pair_freqs(self._splits, word_freqs)
-            if not pair_freqs:
+        while len(self.vocab) < vocab_size:  #循环执行M次，每次扫描所有为一次 --> O(M·W·L) 
+            pair_freqs = self._compute_pair_freqs()
+            if not pair_freqs: 
                 break
 
-            best = max(pair_freqs, key=pair_freqs.get)
+            best = max(pair_freqs, key=pair_freqs.get) #O(p) where p is the number of unique pairs
             a, b = best
             merged = a + b
 
@@ -69,7 +76,7 @@ class NaiveBPE(BaseTokenizer):
 
             _merge_pair(a, b, self._splits)
 
-    def tokenize(self, text):
+    def tokenize(self, text): #O(M·L·T） where M is the number of merges, L is the average word length, and T is the number of tokens in the input text. In practice, this can be quite slow for large vocabularies and long texts.
         if not self.vocab or not self.merges:
             raise RuntimeError("Call train() first.")
 
@@ -78,20 +85,10 @@ class NaiveBPE(BaseTokenizer):
         splits = [
             [ch if ch in vocab_set else "<unk>" for ch in word]
             for word in pre_tokenize(text)
-        ]
+        ] 
 
         for a, b, merged in self.merges:
-            for i, split in enumerate(splits):
-                j = 0
-                new_split = []
-                while j < len(split):
-                    if j < len(split) - 1 and split[j] == a and split[j + 1] == b:
-                        new_split.append(merged)
-                        j += 2
-                    else:
-                        new_split.append(split[j])
-                        j += 1
-                splits[i] = new_split
+            splits = [_merge_split(split, a, b, merged) for split in splits]
 
         return [tok for split in splits for tok in split]
 
@@ -136,7 +133,7 @@ if __name__ == "__main__":
         word_freqs = json.load(f)
     print(f"  {len(word_freqs):,} unique words, {sum(word_freqs.values()):,} total tokens")
 
-    VOCAB_SIZE = 1000
+    VOCAB_SIZE = 5000
     print(f"\nTraining NaiveBPE (vocab_size={VOCAB_SIZE}) ...")
     t0 = time.time()
     bpe = NaiveBPE()
