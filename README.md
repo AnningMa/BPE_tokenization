@@ -4,8 +4,19 @@
 
 ### load data
 
-填写
-
+```
+python prepare_data.py
+```
+This script downloads:
+data/wikitext-103/
+  wiki.train.tokens
+  wiki.valid.tokens
+  wiki.test.tokens
+data/gutenberg/
+  gutenberg_600_train.txt
+  gutenberg_1200_train.txt
+  (The Gutenberg test set is already included in this repository: data/guten_test_chunk.txt)
+  
 ### normalization
 Before training and evaluation, the text is lowercased and pre-tokenized into word-level units.
 We use r"[a-z]+(?:'[a-z]+)?" which keeps alphabetic English words and simple apostrophe forms such as don't, while excluding numbers, punctuation-only tokens, and non-Latin strings. The same preprocessing is used for BPE and WordPiece, so the comparison is based on the same word-level input.
