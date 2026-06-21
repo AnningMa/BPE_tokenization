@@ -2,24 +2,18 @@ import argparse
 import json
 import os
 import re
-import time
-from collections import Counter, defaultdict
-from itertools import islice
+from collections import Counter
 from pathlib import Path
-from tarfile import DEFAULT_FORMAT
 from typing import Dict, List
 
 import numpy as np
 from datasets import load_dataset, load_from_disk
 from sklearn.metrics import cohen_kappa_score
+from wordpiece_baseline import encode_word_type
+from wordpiece_fast_tokenization import WordPieceTrieTokenizer
 
 from bpe_fast import FastBPE
-from bpe_naive import NaiveBPE
 from morfessor_segmenter import MorfessorModel
-from porter_segmenter_nltk import PorterSegmenter
-from src.get_ref_text import text_gtn
-from wordpiece_baseline import encode_word_type, save_vocab, train_wordpiece
-from wordpiece_fast_tokenization import WordPieceTrieTokenizer
 
 """
 three metrics
@@ -37,17 +31,18 @@ three metrics
     - avg fertility (on both freq and rare words)
 """
 
-
-GOLD_PATH = Path(__file__).parent.parent / "data" / "goldstd_combined.segmentation.eng"
-# "../data/goldstd_combined.segmentation.eng"
-FREQ_WORDS_PATH = Path(__file__).parent.parent / "data" / "google-10000-english.txt"
-# "../data/google-10000-english.txt"
-LOG_PATH = Path(__file__).parent.parent / "log"
-
-DEFAULT_VOCAB_DIR = Path(__file__).parent.parent / "data"
+DATA_DIR = Path(__file__).parent.parent / "data"
+GOLD_PATH = DATA_DIR / "goldstd_combined.segmentation.eng"
+FREQ_WORDS_PATH = DATA_DIR / "google-10000-english.txt"
+LOG_DIR = Path(__file__).parent.parent / "log"
 
 
 class Tokenizer:
+    """
+    unified interface for all tokenizers
+    trained vocabs need to be put in the `../data/` directory
+    """
+
     def __init__(
         self,
         type: str,
@@ -67,9 +62,15 @@ class Tokenizer:
             bpe = FastBPE()
             bpe.load_vocab(vocab_path, merges_path)
             if not is_long:
-                self.tokenizer = bpe.tokenize
+                tok = bpe.tokenize
             else:
-                self.tokenizer = bpe.tokenize_longest
+                tok = bpe.tokenize_longest
+
+            def _bpe(word):
+                res = tok(word)
+                return [w.replace("_", "") for w in res if w != "_"]
+
+            self.tokenizer = _bpe
 
         if type == "wpc":
             wp_voc = load_wp_vocab(
@@ -96,9 +97,9 @@ class Tokenizer:
 
             self.tokenizer = _f_wpc
 
-        if type == "morf":
-            mo = MorfessorModel().load("../data/morf_wiki_103.bin")
-            self.tokenizer = mo.segment
+        # if type == "morf":
+        # mo = MorfessorModel().load("../data/morf_wiki_103.bin")
+        # self.tokenizer = mo.segment
 
 
 def seg_to_vec(pieces: list[str], word_len: int) -> list[int]:
@@ -437,7 +438,7 @@ def f_wpc(word, vocab):
     return [w.replace("##", "") for w in res]
 
 
-def compare_run(tok_a: Tokenizer, tok_b: Tokenizer, corpus):
+def compare_run(tok_a: Tokenizer, tok_b: Tokenizer, corpus, log_dir=LOG_DIR):
     print(f"\n---{tok_a.type} vs {tok_b.type}---")
     res = pairwise_agreement(corpus, tok_a.tokenizer, tok_b.tokenizer)
     params_a = {
@@ -455,10 +456,10 @@ def compare_run(tok_a: Tokenizer, tok_b: Tokenizer, corpus):
     with open(LOG_PATH / "agreement-log.jsonl", "a") as f:
         json.dump({"a": params_a, "b": params_b, "result": res}, f)
         f.write("\n")
-    print(f"Log written to: {LOG_PATH / 'agreement-log.jsonl'}")
+    print(f"Log written to: {log_dir / 'agreement-log.jsonl'}")
 
 
-def eval_run(tok: Tokenizer):
+def eval_run(tok: Tokenizer, log_dir=LOG_DIR):
     GOLD_CACHE = get_gold(GOLD_PATH)
     print(f"Evaluating {tok.type} ...")
     res_gold = against_gold(GOLD_CACHE, tok.tokenizer)
@@ -468,7 +469,7 @@ def eval_run(tok: Tokenizer):
     if not tok.type == "morf":
         res_domain = in_out_domain(tok.tokenizer, tok.data_id)
 
-    with open(LOG_PATH / "tokenize-log.jsonl", "a") as f:
+    with open(log_dir / "tokenize-log.jsonl", "a") as f:
         json.dump(
             {
                 "type": tok.type,
@@ -487,49 +488,52 @@ def eval_run(tok: Tokenizer):
 
 
 if __name__ == "__main__":
-    tokenizers = {
-        "morfessor": Tokenizer("morf", "wiki"),
-        "bpe_wiki_5000": Tokenizer("bpe", "wiki", 5_000),
-        "bpe_wiki_10000": Tokenizer("bpe", "wiki", 10_000),
-        "bpe_wiki_10000_long": Tokenizer("bpe", "wiki", 10_000, is_long=True),
-        "bpe_wiki_20000": Tokenizer("bpe", "wiki", 20_000),
-        "bpe_guten600_10000": Tokenizer("bpe", "guten600", 10_000),
-        "bpe_guten1k2_10000": Tokenizer("bpe", "guten1k2", 10_000),
-        "bpe_guten1k2_10000_long": Tokenizer("bpe", "guten1k2", 10_000, is_long=True),
-        "wpc_wiki_10000_100": Tokenizer("wpc", "wiki", 10_000, 100),
-        "wpc_wiki_10000_500": Tokenizer("wpc", "wiki", 10_000, 500),
-        "wpc_wiki_20000_500": Tokenizer("wpc", "wiki", 20_000, 500),
-        "wpc_guten600_10000_500": Tokenizer("wpc", "guten600", 10_000, 500),
-        "wpc_guten1k2_10000_500": Tokenizer("wpc", "guten1k2", 10_000, 500),
-    }
-
     parser = argparse.ArgumentParser()
-    parser.add_argument("--which", "-w", choices=["compare", "eval"], required=True)
-    parser.add_argument("--tok-a", "-a", choices=tokenizers.keys(), required=True)
-    parser.add_argument("--tok-b", "-b", choices=tokenizers.keys())
-    parser.add_argument("--eg", action="store_true")
-    parser.add_argument("--test-data", action="store_true")
+    parser.add_argument(
+        "--type",
+        choices=["bpe", "wpc"],
+        required=True,
+        help="Tokenizer type, choose between 'bpe' or 'wpc'.",
+    )
+    parser.add_argument(
+        "--data",
+        choices=["wiki", "guten600", "guten1k2"],
+        required=True,
+        help="Training data, choose between 'wiki', 'guten600' or 'guten1k2'.",
+    )
+    parser.add_argument(
+        "--vocab-size",
+        "-v",
+        choices=[10_000, 20_000],
+        default=10_000,
+        help="Vocabulary size, 10_000 and 20_000 available, default=10_000.",
+    )
+    parser.add_argument(
+        "--min-pair-freq",
+        "-m",
+        choices=[100, 500],
+        default=500,
+        help="Min pair freq threshold, 100 and 500 available, default=500.",
+    )
+
+    parser.add_argument(
+        "--eg",
+        action="store_true",
+        help="If toggled, print several examples of the currently evaluated tokenizer at the end of evaluation.",
+    )
     args = parser.parse_args()
 
-    os.makedirs(DEFAULT_VOCAB_DIR, exist_ok=True)
+    os.makedirs(LOG_DIR, exist_ok=True)
 
-    test_vocab = dict(
-        make_vocab(local_dir=LOCAL_DIR / "wikitext103_test", split="test")
-    )
-    # agree_corpus = get_gold(GOLD_PATH).keys()
-    tok_a = tokenizers[args.tok_a]
-
-    if args.which == "compare":
-        if args.tok_b:
-            tok_b = tokenizers[args.tok_b]
-            compare_run(tok_a, tok_b, test_vocab)
-        else:
-            raise Exception("Two tokenizers needed")
+    if args.min_pair_freq:
+        tok = Tokenizer(args.type, args.data, args.vocab_size, args.min_pair_freq)
     else:
-        eval_run(tok_a)
+        tok = Tokenizer(args.type, args.data, args.vocab_size)
+
+    eval_run(tok)
 
     if args.eg:
-        print(f"\n---Examples with {args.tok_a}")
+        print("\n---Examples---")
         words = ["unbelievable", "tokenization", "preprocessing", "cats", "the"]
         for w in words:
-            print(f"{w} -> {tok_a.tokenizer(w)}")
+            print(f"{w} -> {tok.tokenizer(w)}")
