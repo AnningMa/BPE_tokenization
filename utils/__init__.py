@@ -12,7 +12,8 @@ def pre_tokenize(text: str) -> list[str]:
     tokens = []
     for word in text.split():
         word = word.lower()
-        parts = re.findall(r"[a-z]+(?:'[a-z]+)?|[.,!?;:\"'()\-\[\]{}]", word)
+        parts = re.findall(r"[a-z]+(?:'[a-z]+)?", word)
+        #parts = re.findall(r"[a-z]+(?:'[a-z]+)?|[.,!?;:\"'()\-\[\]{}]", word)
         tokens.extend(parts)
     return tokens
 
