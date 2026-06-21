@@ -5,9 +5,14 @@ from datasets import load_dataset
 
 
 def pre_tokenize(text: str) -> list[str]:
+    """
+    Split text into lowercase English words/apostrophes and common punctuation.
+    Drops digits, uppercase letters (after lowercasing), and non-Latin scripts.
+    """
     tokens = []
     for word in text.split():
-        parts = re.findall(r"[A-Za-z0-9']+|[^A-Za-z0-9'\s]", word)
+        word = word.lower()
+        parts = re.findall(r"[a-z]+(?:'[a-z]+)?|[.,!?;:\"'()\-\[\]{}]", word)
         tokens.extend(parts)
     return tokens
 
