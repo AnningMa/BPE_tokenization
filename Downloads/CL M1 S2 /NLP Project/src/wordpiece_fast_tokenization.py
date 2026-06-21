@@ -1,10 +1,8 @@
 """
 Fast WordPiece tokenization using trie-based longest-match-first.
 
-The optimization here targets the WordPiece tokenization phase. The baseline
-longest-match-first implementation repeatedly creates candidate substrings and
-checks whether they are in the vocabulary. The fast implementation stores the
-vocabulary in tries and finds the longest valid match by traversing characters.
+The optimization here targets the WordPiece tokenization phase. The baseline longest-match-first implementation repeatedly creates candidate substrings and
+checks whether they are in the vocabulary. The fast implementation stores the vocabulary in tries and finds the longest valid match by traversing characters.
 """
 
 from __future__ import annotations
@@ -12,11 +10,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from collections.abc import Sequence
-from utils import pre_tokenize
-
-
-UNK_TOKEN = "[UNK]"
-CONTINUATION_PREFIX = "##"
+from wordpiece_baseline import encode_word_type
 
 
 @dataclass
@@ -33,15 +27,13 @@ class WordPieceTrieTokenizer:
     We use two tries because WordPiece distinguishes between subwords that can begin a word and continuation subwords:
     - start_trie stores vocabulary items without the ## prefix.
     - continuation_trie stores vocabulary items with the ## prefix, but indexes them by their surface form without ##.
-    This implements the same ambiguity-resolution strategy as the baseline
-    WordPiece tokenizer: greedy longest-match-first from left to right.
     """
 
     def __init__(
         self,
         vocabulary: set[str],
-        unk_token: str = UNK_TOKEN,
-        continuation_prefix: str = CONTINUATION_PREFIX,
+        unk_token: str = "[UNK]",
+        continuation_prefix: str = "##",
     ) -> None:
         self.vocabulary = set(vocabulary)
         self.unk_token = unk_token
@@ -127,55 +119,6 @@ class WordPieceTrieTokenizer:
 
         return subword_tokens
 
-    def tokenize_text(self, text: str) -> list[str]:
-        """
-        Tokenize running text into WordPiece subword tokens.
-        The text is first pre-tokenized into word tokens. Each word token is then segmented into subword tokens using the trie-based tokenizer.
-        """
-        output_subword_tokens: list[str] = []
-        for word_token in pre_tokenize(text):
-            output_subword_tokens.extend(self.encode_word_type(word_token))
-        return output_subword_tokens
-
-
-def encode_word_type_baseline(
-    word_type: str,
-    vocabulary: set[str],
-    unk_token: str = UNK_TOKEN,
-    continuation_prefix: str = CONTINUATION_PREFIX,
-) -> list[str]:
-    """
-    Baseline WordPiece longest-match-first tokenization.
-    This version repeatedly creates candidate substrings from longest to shortest and checks whether they exist in the vocabulary. It is simple and useful for
-    correctness checks, but less efficient than trie traversal.
-    """
-    word_type = word_type.lower()
-    subword_tokens: list[str] = []
-    start_position = 0
-
-    while start_position < len(word_type):
-        matched_subword: str | None = None
-        matched_end_position = start_position
-
-        for end_position in range(len(word_type), start_position, -1):
-            surface = word_type[start_position:end_position]
-            candidate = (
-                surface
-                if start_position == 0
-                else continuation_prefix + surface
-            )
-            if candidate in vocabulary:
-                matched_subword = candidate
-                matched_end_position = end_position
-                break
-
-        if matched_subword is None:
-            return [unk_token]
-
-        subword_tokens.append(matched_subword)
-        start_position = matched_end_position
-
-    return subword_tokens
 
 
 def compare_baseline_and_fast_outputs(
@@ -189,7 +132,7 @@ def compare_baseline_and_fast_outputs(
     fast_tokenizer = WordPieceTrieTokenizer(vocabulary)
 
     for word_type in word_types:
-        baseline = encode_word_type_baseline(word_type, vocabulary)
+        baseline = encode_word_type(word_type, vocabulary)
         fast = fast_tokenizer.encode_word_type(word_type)
         if baseline != fast:
             print("Mismatch found.")
@@ -214,7 +157,7 @@ def time_baseline_and_fast_tokenization(
 
     start_time = time.perf_counter()
     baseline_outputs = [
-        encode_word_type_baseline(word_token, vocabulary) for word_token in word_tokens
+        encode_word_type(word_token, vocabulary) for word_token in word_tokens
     ]
     baseline_time = time.perf_counter() - start_time
 
@@ -251,9 +194,9 @@ def evaluate_fast_tokenizer_on_word_tokens(
         }
 
     total_subword_tokens = sum(len(subword_tokens) for subword_tokens in outputs)
-    unk_word_tokens = sum(1 for subword_tokens in outputs if subword_tokens == [UNK_TOKEN])
+    unk_word_tokens = sum(1 for subword_tokens in outputs if subword_tokens == ["[UNK]"])
     single_subword_word_tokens = sum(
-        1 for subword_tokens in outputs if len(subword_tokens) == 1 and subword_tokens != [UNK_TOKEN]
+        1 for subword_tokens in outputs if len(subword_tokens) == 1 and subword_tokens != ["[UNK]"]
     )
 
     return {

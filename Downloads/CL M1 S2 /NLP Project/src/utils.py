@@ -12,7 +12,7 @@ def load_corpus(path: str) -> list[str]:
 def pre_tokenize(text: str) -> list[str]:
     
     text = text.lower()
-    word_tokens = re.findall(r"[a-z0-9']+|[^a-z0-9'\s]", text)
+    word_tokens = re.findall(r"[a-z]+(?:'[a-z]+)?", text)
     return word_tokens
 
 

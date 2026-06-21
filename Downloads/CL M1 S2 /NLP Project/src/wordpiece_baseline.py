@@ -2,9 +2,7 @@ from collections import defaultdict
 import csv
 import time
 from collections.abc import Iterable
-from utils import load_corpus, pre_tokenize, get_word_type_frequencies
-
-# Phase 0: corpus loading and pre-tokenization
+from utils import pre_tokenize
 
 # Phase 1: WordPiece vocabulary learning
 
@@ -50,12 +48,14 @@ def initialize_wordpiece_vocabulary(
 def compute_pair_scores(
     word_type_splits: dict[str, list[str]],
     word_type_freqs: dict[str, int],
+    min_pair_freq: int = 1,
 ) -> dict[tuple[str, str], float]:
     """
     Compute WordPiece scores for all adjacent subword pairs.
     score(pair) = pair_frequency / (frequency_of_first_subword * frequency_of_second_subword)
     This is the baseline implementation: after every merge, frequencies and scores are recomputed over all word types.
     This is expensive for large corpora.
+    If min_pair_freq > 1, pairs with frequency below this threshold are ignored. This helps avoid selecting very rare but high-association pairs.
     """
     subword_type_freqs = defaultdict(int)
     pair_freqs = defaultdict(int)
@@ -72,6 +72,9 @@ def compute_pair_scores(
 
     scores: dict[tuple[str, str], float] = {}
     for pair, pair_frequency in pair_freqs.items():
+        if pair_frequency < min_pair_freq:
+            continue
+
         first_subword, second_subword = pair
         scores[pair] = pair_frequency / (
             subword_type_freqs[first_subword] * subword_type_freqs[second_subword]
@@ -118,12 +121,14 @@ def merge_pair_in_word_type_splits(
 
     return updated_word_type_splits, new_subword_type
 
+DEFAULT_MIN_PAIR_FREQ = 1
 
 def train_wordpiece(
     word_type_freqs: dict[str, int],
     vocab_size: int,
     special_tokens: list[str] | None = None,
     verbose: bool = False,
+    min_pair_freq: int = DEFAULT_MIN_PAIR_FREQ,
 ) -> tuple[set[str], dict[str, list[str]], list[tuple[str, str, str]]]:
     """
     Train a baseline WordPiece vocabulary. This function is the vocabulary learning phase, not the tokenization phase.
@@ -144,7 +149,7 @@ def train_wordpiece(
     merges: list[tuple[str, str, str]] = []
 
     while len(vocabulary) < vocab_size:
-        scores = compute_pair_scores(word_type_splits, word_type_freqs)
+        scores = compute_pair_scores(word_type_splits, word_type_freqs, min_pair_freq=min_pair_freq)
 
         if not scores:
             break
@@ -225,7 +230,7 @@ def tokenize_wordpiece(text: str, vocabulary: set[str]) -> list[str]:
     return output_subword_tokens
 
 
-# Timing and simple tokenizer evaluation
+# Evaluation and timing helpers
 
 def evaluate_wordpiece_on_word_types(
     test_word_types: list[str],
@@ -299,6 +304,7 @@ def time_training(
     word_type_freqs: dict[str, int],
     vocab_size: int,
     special_tokens: list[str] | None = None,
+    min_pair_freq: int = 1,
 ) -> tuple[set[str], dict[str, list[str]], list[tuple[str, str, str]], float]:
     """
     Train WordPiece and return the training time.
@@ -306,13 +312,13 @@ def time_training(
     """
     start_time = time.perf_counter()
     vocabulary, word_type_splits, merges = train_wordpiece(
-        word_type_freqs, vocab_size, special_tokens=special_tokens
+        word_type_freqs, vocab_size, special_tokens=special_tokens, min_pair_freq=min_pair_freq,
     )
     training_time = time.perf_counter() - start_time
     return vocabulary, word_type_splits, merges, training_time
 
 
-# Saving outputs
+# Saving helpers
 
 def save_vocab(vocabulary: set[str], path: str) -> None:
     
@@ -333,55 +339,3 @@ def save_tokenization_examples(
         for word_type in test_word_types:
             subword_tokens = encode_word_type(word_type, vocabulary)
             writer.writerow([word_type, " ".join(subword_tokens)])
-
-
-# Ambiguity demonstration for the report
-
-def get_all_possible_segmentations(
-    word_type: str,
-    vocabulary: set[str],
-    unk_token: str = "[UNK]",
-) -> list[list[str]]:
-    """
-    Enumerate all possible segmentations of one word type under a vocabulary.
-    This function is not used by the tokenizer. It is useful for showing why an ambiguity-resolution strategy is needed. WordPiece resolves this ambiguity
-    with greedy longest-match-first tokenization.
-    """
-    word_type = word_type.lower()
-    results: list[list[str]] = []
-
-    def backtrack(start: int, current: list[str]) -> None:
-        if start == len(word_type):
-            results.append(current.copy())
-            return
-
-        for end in range(start + 1, len(word_type) + 1):
-            candidate = word_type[start:end]
-            if start > 0:
-                candidate = "##" + candidate
-            if candidate in vocabulary:
-                current.append(candidate)
-                backtrack(end, current)
-                current.pop()
-
-    backtrack(0, [])
-    return results if results else [[unk_token]]
-
-
-def ambiguity_demo() -> dict[str, any]:
-    """
-    Return a small example showing segmentation ambiguity and its resolution.
-    """
-    demo_vocabulary = {
-        "un", "##believable", "##believ", "##able", "unbelievable"
-    }
-    word_type = "unbelievable"
-    return {
-        "word_type": word_type,
-        "all_possible_segmentations": get_all_possible_segmentations(
-            word_type, demo_vocabulary
-        ),
-        "longest_match_first_segmentation": encode_word_type(
-            word_type, demo_vocabulary
-        ),
-    }
