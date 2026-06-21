@@ -15,25 +15,10 @@ from wordpiece_fast_tokenization import WordPieceTrieTokenizer
 from bpe_fast import FastBPE
 from morfessor_segmenter import MorfessorModel
 
-"""
-three metrics
-
-1. BPE-WordPiece agreement:
-    - boundary F1 on corpus
-    - average boundary F1 per word.
-
-2. Against gold standard:
-    - precision, recall, F1
-    - average fertility (nb. of subwords per word token)
-
-3. On freq/rare words:
-    - nb. of untouched freq words
-    - avg fertility (on both freq and rare words)
-"""
-
 DATA_DIR = Path(__file__).parent.parent / "data"
 GOLD_PATH = DATA_DIR / "goldstd_combined.segmentation.eng"
 FREQ_WORDS_PATH = DATA_DIR / "google-10000-english.txt"
+DEFAULT_VOCAB_DIR = DATA_DIR / "vocabs"
 LOG_DIR = Path(__file__).parent.parent / "log"
 
 
