@@ -42,7 +42,6 @@ The main WordPiece script is:
 python wordpiece/run_wordpiece_experiments.py --help
 ```
 
-To train the exact baseline WordPiece tokenizer:
 ```
 python wordpiece/run_wordpiece_experiments.py \
   --training_method <baseline_or_fast> \
