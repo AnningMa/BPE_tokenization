@@ -5,13 +5,16 @@ import re
 from collections import Counter
 from pathlib import Path
 from typing import Dict, List
+import sys
 
 import numpy as np
 from datasets import load_dataset, load_from_disk
 from sklearn.metrics import cohen_kappa_score
-from wordpiece_baseline import encode_word_type
-from wordpiece_fast_tokenization import WordPieceTrieTokenizer
 
+directory = Path(__file__).resolve().parent
+sys.path.append(str(directory.parent))
+from wordpiece.wordpiece_baseline import encode_word_type
+from wordpiece.wordpiece_fast_tokenization import WordPieceTrieTokenizer
 from bpe.bpe_fast import FastBPE
 
 DATA_DIR = Path(__file__).parent.parent / "data"
@@ -30,9 +33,9 @@ class Tokenizer:
     def __init__(
         self,
         type: str,
-        data_id: str | None = None,
-        vocab_size: int | None = None,
-        min_pair_freq: int | None = None,
+        data_id = None,
+        vocab_size = None,
+        min_pair_freq = None,
         is_long: bool = False,
     ):
         self.type = type
@@ -150,8 +153,8 @@ def pairwise_agreement(corpus, tok_a, tok_b) -> Dict:
     }
 
 
-_train_vocab_cache: Counter | None = None
-_test_vocab_cache: Counter | None = None
+_train_vocab_cache = None
+_test_vocab_cache = None
 LOCAL_DIR = Path(__file__).parent.parent / "data"
 
 
@@ -177,7 +180,7 @@ def make_vocab(
 
     except Exception:
         print("No local data, start downloading...")
-        dataset = load_dataset(base_name, dataset_id, split=split, token=HF_TOKEN)
+        dataset = load_dataset(base_name, dataset_id, split=split)
 
     counter = Counter()
 
@@ -237,7 +240,7 @@ def against_gold(gold, tokenize) -> Dict:
     n_sw_pred = []
     # per_word_kappas = []
     per_word_f1s = []
-    skipped = 0
+    skipped = None
     for word in gold.keys():
         v_gold = seg_to_vec(gold[word], len(word))
         vec_gold.extend(v_gold)
@@ -260,7 +263,8 @@ def against_gold(gold, tokenize) -> Dict:
         """
         _, _, pw_f1 = my_p_r_f1(v_pred, v_gold)
         per_word_f1s.append(pw_f1)
-    print(f"[WARN] Skipped {skipped} OOV words in against_gold")
+    if skipped:
+        print(f"[WARN] Skipped {skipped} OOV words in against_gold")
 
     avg_spw_pred = sum(n_sw_pred) / n_words
 
@@ -279,7 +283,7 @@ def against_gold(gold, tokenize) -> Dict:
     }
 
 
-_freq_vocab: List | None = None
+_freq_vocab = None
 
 
 def get_freq_vocab(path):
@@ -302,7 +306,7 @@ def freq_words_metrics(path, tokenize) -> Dict:
     preserved_10k = set()
     n_subwords = []
     n_subwords_1k = []
-    skipped = 0
+    skipped = None
     for i, w in enumerate(freq_vocab):
         try:
             pieces = tokenize(w)
@@ -318,7 +322,8 @@ def freq_words_metrics(path, tokenize) -> Dict:
                 preserved_1k.add(w)
         if i < 1000:
             n_subwords_1k.append(n)
-    print(f"[WARN] Skipped {skipped} OOV words in freq_words_metrics")
+    if skipped: 
+        print(f"[WARN] Skipped {skipped} OOV words in freq_words_metrics")
 
     return {
         "avg_fertility(1k)": sum(n_subwords_1k) / len(n_subwords_1k),
@@ -343,7 +348,7 @@ def least_words_fert(tokenize) -> float:
     least_1k = get_least_1k()
 
     n_sw = []
-    skipped = 0
+    skipped = None
     for word in least_1k:
         try:
             n_sw.append(len(tokenize(word[0])))
@@ -351,7 +356,8 @@ def least_words_fert(tokenize) -> float:
             skipped += 1
             continue
 
-    print(f"[WARN] Skipped {skipped} OOV words in least_words_fert")
+    if skipped:
+        print(f"[WARN] Skipped {skipped} OOV words in least_words_fert")
     avg_fert = sum(n_sw) / len(n_sw)
 
     return avg_fert
@@ -388,9 +394,9 @@ def in_out_domain(tokenize, domain):
     global _guten_test_cache
 
     if _wiki_test_cache is None:
-        _wiki_test_cache = load_lines(DEFAULT_VOCAB_DIR / "wiki_test.txt")
+        _wiki_test_cache = load_lines(DATA_DIR / "wiki_test.txt")
     if _guten_test_cache is None:
-        _guten_test_cache = load_lines(DEFAULT_VOCAB_DIR / "guten_test_chunk.txt")
+        _guten_test_cache = load_lines(DATA_DIR / "guten_test_chunk.txt")
 
     if domain.startswith("wiki"):
         in_domain_fert = avg_fert_over_wt(tokenize, _wiki_test_cache)
@@ -468,7 +474,7 @@ def eval_run(tok: Tokenizer, log_dir=LOG_DIR):
             f,
         )
         f.write("\n")
-    print(f"log written to: {LOG_PATH / 'tokenize-log.jsonl'}")
+    print(f"log written to: {LOG_DIR / 'tokenize-log.jsonl'}")
 
 
 if __name__ == "__main__":
@@ -488,6 +494,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--vocab-size",
         "-v",
+        type=int,
         choices=[10_000, 20_000],
         default=10_000,
         help="Vocabulary size, 10_000 and 20_000 available, default=10_000.",
@@ -495,6 +502,7 @@ if __name__ == "__main__":
     parser.add_argument(
         "--min-pair-freq",
         "-m",
+        type=int,
         choices=[100, 500],
         default=500,
         help="Min pair freq threshold, 100 and 500 available, default=500.",
