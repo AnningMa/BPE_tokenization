@@ -2,9 +2,7 @@ from collections import defaultdict
 import csv
 import time
 from collections.abc import Iterable
-from utils import load_corpus, pre_tokenize, get_word_type_frequencies
-
-# Phase 0: corpus loading and pre-tokenization
+from utils import pre_tokenize
 
 # Phase 1: WordPiece vocabulary learning
 
@@ -123,7 +121,7 @@ def merge_pair_in_word_type_splits(
 
     return updated_word_type_splits, new_subword_type
 
-DEFAULT_MIN_PAIR_FREQ = 50
+DEFAULT_MIN_PAIR_FREQ = 1
 
 def train_wordpiece(
     word_type_freqs: dict[str, int],
@@ -232,7 +230,7 @@ def tokenize_wordpiece(text: str, vocabulary: set[str]) -> list[str]:
     return output_subword_tokens
 
 
-# Timing and simple tokenizer evaluation
+# Evaluation and timing helpers
 
 def evaluate_wordpiece_on_word_types(
     test_word_types: list[str],
@@ -320,7 +318,7 @@ def time_training(
     return vocabulary, word_type_splits, merges, training_time
 
 
-# Saving outputs
+# Saving helpers
 
 def save_vocab(vocabulary: set[str], path: str) -> None:
     
@@ -341,55 +339,3 @@ def save_tokenization_examples(
         for word_type in test_word_types:
             subword_tokens = encode_word_type(word_type, vocabulary)
             writer.writerow([word_type, " ".join(subword_tokens)])
-
-
-# Ambiguity demonstration for the report
-
-def get_all_possible_segmentations(
-    word_type: str,
-    vocabulary: set[str],
-    unk_token: str = "[UNK]",
-) -> list[list[str]]:
-    """
-    Enumerate all possible segmentations of one word type under a vocabulary.
-    This function is not used by the tokenizer. It is useful for showing why an ambiguity-resolution strategy is needed. WordPiece resolves this ambiguity
-    with greedy longest-match-first tokenization.
-    """
-    word_type = word_type.lower()
-    results: list[list[str]] = []
-
-    def backtrack(start: int, current: list[str]) -> None:
-        if start == len(word_type):
-            results.append(current.copy())
-            return
-
-        for end in range(start + 1, len(word_type) + 1):
-            candidate = word_type[start:end]
-            if start > 0:
-                candidate = "##" + candidate
-            if candidate in vocabulary:
-                current.append(candidate)
-                backtrack(end, current)
-                current.pop()
-
-    backtrack(0, [])
-    return results if results else [[unk_token]]
-
-
-def ambiguity_demo() -> dict[str, any]:
-    """
-    Return a small example showing segmentation ambiguity and its resolution.
-    """
-    demo_vocabulary = {
-        "un", "##believable", "##believ", "##able", "unbelievable"
-    }
-    word_type = "unbelievable"
-    return {
-        "word_type": word_type,
-        "all_possible_segmentations": get_all_possible_segmentations(
-            word_type, demo_vocabulary
-        ),
-        "longest_match_first_segmentation": encode_word_type(
-            word_type, demo_vocabulary
-        ),
-    }
