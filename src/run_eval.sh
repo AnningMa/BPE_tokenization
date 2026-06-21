@@ -1,9 +1,10 @@
 #!/bin/bash
 
-VocabSizes=('5000' '10000')
-Thresholds=('100' '500' '1000')
+
+VocabSizes=('10000' '20000')
+Thresholds=('100' '500')
 Tokenizers=('bpe' 'wpc')
-TrainDatas=('wiki' 'guten')
+TrainDatas=('wiki' 'guten600' 'guten1k2')
 
 for t in "${Tokenizers[@]}"; do
     for d in "${TrainDatas[@]}"; do
@@ -19,6 +20,6 @@ for t in "${Tokenizers[@]}"; do
     done
 done
 
-pixi run python eval.py -w eval -a morfessor --eg
+#pixi run python eval.py -w eval -a morfessor --eg
 
-pixi run python eval.py -w compare -a
+#pixi run python eval.py -w compare -a
