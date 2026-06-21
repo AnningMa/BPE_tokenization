@@ -27,7 +27,9 @@ bpe.train(vocab_size=1000, word_freqs=word_freqs)
 ### Train a WordPiece Tokenizer
 
 The main WordPiece script is:
-`python wordpiece/run_wordpiece_experiments.py --help`
+```
+python wordpiece/run_wordpiece_experiments.py --help
+```
 
 To train the exact baseline WordPiece tokenizer:
 ```
