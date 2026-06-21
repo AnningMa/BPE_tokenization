@@ -1,14 +1,18 @@
 """
-Run WordPiece experiments.
+Run WordPiece baseline and fast-version experiments.
 
-This runner is the main entry point for the WordPiece part of the project.
-It trains the baseline WordPiece vocabulary, compares baseline tokenization with the trie-based tokenizer, optionally compares baseline vocabulary learning with
-experimental fast vocabulary learning, and saves results in a reproducible format.
+This runner keeps the essential experiment logic:
+1. train the baseline WordPiece vocabulary on the training split;
+2. compare baseline tokenization with trie-based fast tokenization on the same eval word tokens;
+3. optionally compare baseline vocabulary learning with experimental fast vocabulary learning
+   on the same limited word-type frequency dictionary;
+4. export WordPiece segmentations without ## for the evaluation code.
 """
 
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 import time
@@ -27,8 +31,8 @@ from wordpiece_baseline import (
     encode_word_type,
     train_wordpiece,
 )
-from wordpiece_fast_tokenization import WordPieceTrieTokenizer
-from wordpiece_fast_vocab_learning import train_wordpiece_fast_local_updates, time_baseline_and_fast_training
+from wordpiece_fast_tokenization import WordPieceTrieTokenizer  
+from wordpiece_fast_vocab_learning import time_baseline_and_fast_training
 
 
 def collect_word_tokens(texts: Iterable[str], max_tokens: int) -> list[str]:
@@ -101,6 +105,45 @@ def time_tokenization_comparison(
     return timing, baseline_outputs, fast_outputs, same_outputs
 
 
+def strip_wordpiece_prefix(tokens: Sequence[str]) -> list[str]:
+    """Remove WordPiece continuation markers for BPE/morphology evaluation."""
+    pieces: list[str] = []
+    for token in tokens:
+        if token == "[UNK]":
+            pieces.append(token)
+        elif token.startswith("##"):
+            pieces.append(token[2:])
+        else:
+            pieces.append(token)
+    return pieces
+
+
+def export_surface_segmentations(
+    word_types: Sequence[str],
+    vocabulary: set,
+    json_path: Path,
+    csv_path: Path,
+) -> None:
+    """Save word -> surface pieces, with WordPiece ## markers removed."""
+    segmentations = {
+        word: strip_wordpiece_prefix(encode_word_type(word, vocabulary)) for word in word_types
+    }
+
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    with json_path.open("w", encoding="utf-8") as f:
+        json.dump(segmentations, f, indent=2, ensure_ascii=False)
+
+    with csv_path.open("w", encoding="utf-8", newline="") as f:
+        writer = csv.writer(f)
+        writer.writerow(["word_type", "surface_pieces_for_evaluation"])
+        for word, pieces in segmentations.items():
+            writer.writerow([word, " ".join(pieces)])
+
+    print("Example surface segmentations exported for evaluation:")
+    for word, pieces in list(segmentations.items())[:10]:
+        print(f"{word!r:<20} -> {pieces}")
+
+
 def save_vocab(vocabulary: set, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("w", encoding="utf-8") as f:
@@ -115,29 +158,16 @@ def save_json(data: dict[str, object], path: Path) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(
-        description=(
-            "Train a baseline WordPiece vocabulary and compare it with the fast WordPiece implementations"
-        )
-    )
-    parser.add_argument("--train_path", required=True, help="Training corpus path.")
-    parser.add_argument("--valid_path", default="", help="Validation corpus path.")
-    parser.add_argument("--test_path", default="", help="Test corpus path.")
-    parser.add_argument("--vocab_size", type=int, default=5000, help="Target WordPiece vocabulary size.")
-    parser.add_argument("--output_dir", type=str, default="results", help="Directory where vocabularies, segmentations and JSON results are saved.")
-    parser.add_argument("--max_train_lines", type=int, default=None, help="Optional limit on training lines.Use for quick tests.")
-    parser.add_argument("--max_eval_word_tokens", type=int, default=100000, help="Maximum number of held-out tokens used for tokenization.")
-    parser.add_argument("--max_fast_training_word_types", type=int, default=0, help="Compare baseline and experimental fast vocabulary learning.")
-    parser.add_argument("--verbose_merges", action="store_true", help="Print selected merge pairs during vocabulary learning.")
-    parser.add_argument("--min_pair_freq", type=int, default=1,help=(
-        "Minimum frequency required for a pair to be considered during vocabulary learning. Default 1 gives the unfiltered baseline."
-    ))
-    parser.add_argument("--training_method", choices=["baseline", "fast"], default="baseline",
-    help=(
-        "Which WordPiece vocabulary learner to use. Baseline uses the exact naive WordPiece learner. Fast uses the experimental fast vocabulary learner with local updates."
-    ),
-)
-
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--train_path", type=str, default="data/train.tokens")
+    parser.add_argument("--valid_path", type=str, default="data/valid.tokens")
+    parser.add_argument("--test_path", type=str, default="data/test.tokens")
+    parser.add_argument("--vocab_size", type=int, default=5000)
+    parser.add_argument("--output_dir", type=str, default="results")
+    parser.add_argument("--max_train_lines", type=int, default=None)
+    parser.add_argument("--max_eval_word_tokens", type=int, default=100000)
+    parser.add_argument("--max_fast_training_word_types", type=int, default=0)
+    parser.add_argument("--verbose_merges", action="store_true")
     args = parser.parse_args()
 
     output_dir = Path(args.output_dir)
@@ -151,35 +181,20 @@ def main() -> None:
     word_type_freqs = get_word_type_frequencies(train_corpus)
     print("Number of training lines:", len(train_corpus))
     print("Number of training word types:", len(word_type_freqs))
-    print("Target vocabulary size:", args.vocab_size)
-    print("Minimum pair frequency:", args.min_pair_freq)
 
-    print(f"\n1) WordPiece vocabulary learning ({args.training_method})")
+    print("\n1) Baseline WordPiece vocabulary learning")
     start = time.perf_counter()
+    baseline_vocabulary, _, baseline_merges = train_wordpiece(
+        word_type_freqs=word_type_freqs,
+        vocab_size=args.vocab_size,
+        verbose=args.verbose_merges,
+    )
+    baseline_training_time = time.perf_counter() - start
 
-    if args.training_method == "baseline":
-        vocabulary, _, merges = train_wordpiece(
-            word_type_freqs=word_type_freqs,
-            vocab_size=args.vocab_size,
-            verbose=args.verbose_merges,
-            min_pair_freq=args.min_pair_freq,
-        )
-    else:
-        vocabulary, _, merges = train_wordpiece_fast_local_updates(
-            word_type_freqs=word_type_freqs,
-            vocab_size=args.vocab_size,
-            verbose=args.verbose_merges,
-            min_pair_freq=args.min_pair_freq,
-        )
-
-    training_time = time.perf_counter() - start
-    print(f"Training method: {args.training_method}")
-    print(f"Training time: {training_time:.2f}s")
-    print(f"Vocabulary size: {len(vocabulary)}")
-    print(f"Number of merges: {len(merges)}")
-    
-    vocab_filename = f"wordpiece_{args.training_method}_vocab.txt"
-    save_vocab(vocabulary, output_dir / vocab_filename)
+    print("Final baseline vocabulary size:", len(baseline_vocabulary))
+    print("Number of baseline merges:", len(baseline_merges))
+    print("Baseline training time:", round(baseline_training_time, 4), "seconds")
+    save_vocab(baseline_vocabulary, output_dir / "wordpiece_baseline_vocab.txt")
 
     # 2. Load held-out eval split and compare tokenization implementations.
     test_corpus = load_corpus(args.test_path) if Path(args.test_path).exists() else []
@@ -194,7 +209,7 @@ def main() -> None:
     print("Evaluation word types:", len(eval_word_types))
 
     timing, baseline_outputs, _, same_outputs = time_tokenization_comparison(
-        eval_word_tokens, vocabulary
+        eval_word_tokens, baseline_vocabulary
     )
     baseline_metrics = evaluate_tokenizer_outputs(baseline_outputs)
 
@@ -205,8 +220,17 @@ def main() -> None:
     print("Fast tokenization time:", round(timing["fast_tokenization_time_seconds"], 4), "seconds")
     print("Tokenization speedup:", timing["speedup"])
 
-    # 3. Optional experimental fast vocabulary-learning comparison.
-    print("\n3) Experimental fast WordPiece vocabulary learning")
+    # 3. Export evaluation-friendly word segmentations.
+    print("\n3) Export surface segmentations for evaluation")
+    export_surface_segmentations(
+        eval_word_types,
+        baseline_vocabulary,
+        output_dir / "wordpiece_surface_segmentations_for_eval.json",
+        output_dir / "wordpiece_surface_segmentations_for_eval.csv",
+    )
+
+    # 4. Optional experimental fast vocabulary-learning comparison.
+    print("\n4) Experimental fast WordPiece vocabulary learning")
     if args.max_fast_training_word_types == 0:
         fast_training_results: dict[str, object] = {"skipped": True}
         print("Skipped experimental fast training comparison.")
@@ -215,13 +239,12 @@ def main() -> None:
             word_type_freqs, args.max_fast_training_word_types
         )
         print(
-            "Word types used for both baseline and fast training comparison:",
+            "Word types used for BOTH baseline and fast training comparison:",
             len(limited_word_type_freqs),
         )
         fast_training_results = time_baseline_and_fast_training(
             word_type_freqs=limited_word_type_freqs,
             vocab_size=args.vocab_size,
-            min_pair_freq=args.min_pair_freq,
         )
         for key, value in fast_training_results.items():
             print(key, ":", value)
@@ -233,7 +256,6 @@ def main() -> None:
             "valid_path": args.valid_path,
             "test_path": args.test_path,
             "vocab_size": args.vocab_size,
-            "min_pair_freq": args.min_pair_freq,
             "max_train_lines": args.max_train_lines,
             "max_eval_word_tokens": args.max_eval_word_tokens,
             "max_fast_training_word_types": args.max_fast_training_word_types,
@@ -244,12 +266,10 @@ def main() -> None:
             "num_eval_word_tokens": len(eval_word_tokens),
             "num_eval_word_types": len(eval_word_types),
         },
-        "vocabulary_training": {
-            "method": args.training_method,
-            "training_time_seconds": training_time,
-            "vocabulary_size": len(vocabulary),
-            "number_of_merges": len(merges),
-            "vocab_path": str(output_dir / vocab_filename),
+        "baseline_training": {
+            "training_time_seconds": baseline_training_time,
+            "vocabulary_size": len(baseline_vocabulary),
+            "number_of_merges": len(baseline_merges),
         },
         "tokenization_comparison": {
             "same_outputs": same_outputs,
